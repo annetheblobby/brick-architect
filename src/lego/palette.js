@@ -134,6 +134,8 @@ export function applyLanguage(palette, prompt, mainRole) {
     else if (/\bgrass\b|\blawn\b/.test(window)) role = 'ground'
     else if (/\bwater\b/.test(window)) role = 'water'
     else if (/\bsails?\b/.test(window)) role = 'sail'
+    else if (/\bchimneys?\b/.test(window)) role = 'chimney'
+    else if (/\bclocks?\b/.test(window)) role = 'clock'
     if (role && role in next) {
       next[role] = hit.id
       named.add(role)

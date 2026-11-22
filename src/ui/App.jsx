@@ -1,26 +1,28 @@
 import { useEffect, useRef, useState } from 'react'
-import { designFromPixels, designFromPrompt } from '../lego/design.js'
+import { blankModel } from '../lego/design.js'
+import { addCourse, insertCourse, placePiece, removePiece } from '../lego/edit.js'
+import { download, slug } from '../lego/format.js'
+import { forgetSave, listSaves, modelFromCourse, openSave, rememberBuild } from '../lego/library.js'
+import { holdOutside } from '../lego/hold.js'
+import { fillSource, modelFromFile, modelFromPrompt } from '../lego/promptmesh.js'
 import Composer from './Composer.jsx'
 import Studio from './Studio.jsx'
 
-const EXAMPLES = [
-  'Seaside cottage',
-  'Castle gate',
-  'Red coupe',
-  'An orbital shuttle',
-  'A striped lighthouse',
-  'Old oak',
-  'Garden duck',
-  'Birthday cake',
-  'Stone bridge',
-  'Little robot',
-]
+function fitTweak(earlier, change, limit) {
+  const note = (limit || '').trim()
+  const latest = [change, note].filter(Boolean).join('. ')
+  const prior = earlier.filter(Boolean).join('. ')
+  if (!prior) return latest.slice(0, 500)
+  const suffix = `. ${latest}`
+  const head = prior.slice(0, Math.max(0, 500 - suffix.length))
+  return `${head}${suffix}`.slice(0, 500)
+}
 
 export default function App() {
   const [phase, setPhase] = useState('compose')
   const [prompt, setPrompt] = useState('')
   const [photo, setPhoto] = useState(null)
-  const [mode, setMode] = useState('relief')
+  const [modelFile, setModelFile] = useState(null)
   const [studs, setStuds] = useState(32)
   const [variant, setVariant] = useState(0)
   const [model, setModel] = useState(null)
@@ -35,12 +37,34 @@ export default function App() {
   const [card, setCard] = useState(168)
   const [nonce, setNonce] = useState(0)
   const [error, setError] = useState('')
+  const [saves, setSaves] = useState(() => listSaves())
+  const [saved, setSaved] = useState(false)
+  const [mesh, setMesh] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [tool, setTool] = useState('place')
+  const [brush, setBrush] = useState({ w: 2, d: 4, color: 'red' })
+  const [chat, setChat] = useState([])
+  const [chatIndex, setChatIndex] = useState(0)
   const playingRef = useRef(false)
+  const tokenRef = useRef(0)
+  const partTimer = useRef(0)
+  const savedTimer = useRef(0)
+  const phaseRef = useRef(phase)
+  phaseRef.current = phase
   const courseRef = useRef(0)
   const modelRef = useRef(null)
+  const meshRef = useRef(null)
+  const viewRef = useRef(view)
+  const chatRef = useRef([])
+  const chatIndexRef = useRef(0)
+  const chatSeq = useRef(0)
   playingRef.current = playing
   courseRef.current = course
   modelRef.current = model
+  meshRef.current = mesh
+  viewRef.current = view
+  chatRef.current = chat
+  chatIndexRef.current = chatIndex
 
   useEffect(() => {
     if (phase !== 'studio' || !playing || !model) return undefined
@@ -70,8 +94,15 @@ export default function App() {
         event.preventDefault()
         setPlaying(false)
         setCourse((current) => Math.max(0, current - 1))
+      } else if (viewRef.current === 'custom' && (event.key === 'r' || event.key === 'R') && !event.metaKey && !event.ctrlKey) {
+        event.preventDefault()
+        setBrush((current) => ({ ...current, w: current.d, d: current.w }))
+      } else if (viewRef.current === 'custom' && (event.key === 'e' || event.key === 'E') && !event.metaKey && !event.ctrlKey) {
+        event.preventDefault()
+        setTool((current) => (current === 'place' ? 'remove' : 'place'))
       } else if (event.key === ' ') {
         event.preventDefault()
+        if (viewRef.current === 'custom') return
         if (playingRef.current) setPlaying(false)
         else if (courseRef.current >= count - 1) {
           setCourse(0)
@@ -83,9 +114,146 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [phase])
 
-  function finish(next, started) {
+  function disposeTree(root) {
+    root?.traverse((obj) => {
+      obj.geometry?.dispose()
+      obj.material?.dispose()
+    })
+  }
+
+  function copyModel(model) {
+    return JSON.parse(JSON.stringify(model))
+  }
+
+  function nextChatId() {
+    chatSeq.current += 1
+    return `m${chatSeq.current}`
+  }
+
+  function forgetMeshes(keep) {
+    const held = new Set((keep || []).filter(Boolean))
+    const gone = new Set()
+    const drop = (mesh) => {
+      if (!mesh || held.has(mesh) || gone.has(mesh)) return
+      gone.add(mesh)
+      disposeTree(mesh)
+    }
+    drop(meshRef.current)
+    for (const turn of chatRef.current) drop(turn.mesh)
+  }
+
+  function publishChat(turns, index) {
+    chatRef.current = turns
+    chatIndexRef.current = index
+    setChat(turns)
+    setChatIndex(index)
+  }
+
+  function commitBuild(next, source) {
+    forgetMeshes([source])
+    const turn = {
+      id: nextChatId(),
+      prompt: (next.sentence || '').trim(),
+      reply: next.summary || 'Built.',
+      status: 'done',
+      error: '',
+      model: copyModel(next),
+      mesh: source,
+    }
+    publishChat([turn], 0)
+    meshRef.current = source
+    setMesh(source)
+  }
+
+  function commitRevision(next, source, chatId) {
+    const turns = chatRef.current
+    const index = turns.findIndex((turn) => turn.id === chatId)
+    if (index < 0) {
+      disposeTree(source)
+      return false
+    }
+    const updated = {
+      ...turns[index],
+      reply: next.summary || 'Revised.',
+      status: 'done',
+      error: '',
+      model: copyModel(next),
+      mesh: source,
+    }
+    const nextTurns = turns.map((turn, i) => (i === index ? updated : turn)).slice(0, index + 1)
+    forgetMeshes(nextTurns.map((turn) => turn.mesh))
+    publishChat(nextTurns, index)
+    meshRef.current = source
+    setMesh(source)
+    return true
+  }
+
+  function failChat(chatId, message) {
+    const turns = chatRef.current.map((turn) =>
+      turn.id === chatId
+        ? { ...turn, status: 'error', error: message || 'That change did not come together.' }
+        : turn,
+    )
+    chatRef.current = turns
+    setChat(turns)
+  }
+
+  function ensureChat() {
+    if (chatRef.current.length) return
+    const current = modelRef.current
+    if (!current || current.origin !== 'model') return
+    const turn = {
+      id: nextChatId(),
+      prompt: (current.sentence || '').trim(),
+      reply: current.summary || 'Built.',
+      status: 'done',
+      error: '',
+      model: copyModel(current),
+      mesh: meshRef.current,
+    }
+    publishChat([turn], 0)
+  }
+
+  function choosePanel(next) {
+    if (next === 'ai') ensureChat()
+    setPanel(next)
+  }
+
+  function restoreChat(index) {
+    if (busy) return
+    const turn = chatRef.current[index]
+    if (!turn || turn.status !== 'done' || !turn.model) return
+    chatIndexRef.current = index
+    setChatIndex(index)
+    setModel(copyModel(turn.model))
+    if (turn.mesh) {
+      meshRef.current = turn.mesh
+      setMesh(turn.mesh)
+    }
+    setCourse(Math.max(0, turn.model.courses.length - 1))
+    setFocus(null)
+    setPlaying(false)
+    setNotes({})
+    setError('')
+    setView('progress')
+  }
+
+  function finish(next, source, started, token, request) {
     const wait = Math.max(0, 480 - (performance.now() - started))
     window.setTimeout(() => {
+      if (tokenRef.current !== token) {
+        disposeTree(source)
+        return
+      }
+      if (request?.chatId) {
+        const kept = commitRevision(next, source, request.chatId)
+        if (!kept) {
+          setBusy(false)
+          return
+        }
+      } else {
+        commitBuild(next, source)
+      }
       setModel(next)
       setCourse(next.courses.length - 1)
       setFocus(null)
@@ -93,57 +261,271 @@ export default function App() {
       setPlaying(false)
       setView('progress')
       setGhost(false)
-      setPanel('step')
+      setPanel(request?.chatId ? 'ai' : 'step')
       setError('')
+      setBusy(false)
       setPhase('studio')
     }, wait)
   }
 
-  function run(request) {
-    setPhase('building')
+  async function run(request) {
+    const token = tokenRef.current + 1
+    tokenRef.current = token
+    const fromStudio = phaseRef.current === 'studio'
+    setBusy(true)
+    setPlaying(false)
+    setError('')
+    if (!fromStudio) setPhase('building')
+    const started = performance.now()
+    await new Promise((resolve) => window.setTimeout(resolve, 40))
+    if (tokenRef.current !== token) return
+    try {
+      let next
+      let source = null
+      if (request.modelFile) {
+        const built = await modelFromFile(request.modelFile, request.studs)
+        next = built.model
+        source = built.source
+        if (request.prompt.trim()) {
+          next.name = request.prompt.trim()
+          next.prompt = request.prompt.trim()
+        }
+      } else {
+        const built = await modelFromPrompt(
+          request.prompt,
+          request.studs,
+          request.variant,
+          request.photo?.dataUrl || null,
+          request.revision || null,
+        )
+        next = built.model
+        source = built.source
+        if (request.hold?.previous && request.hold?.mask) {
+          next = holdOutside(request.hold.previous, next, request.hold.mask)
+        }
+      }
+      if (tokenRef.current !== token) {
+        disposeTree(source)
+        return
+      }
+      finish(next, source, started, token, request)
+    } catch (err) {
+      if (tokenRef.current !== token) return
+      if (request.chatId) failChat(request.chatId, err.message || 'That change did not come together.')
+      setBusy(false)
+      setError(err.message || 'That build did not come together.')
+      if (!fromStudio) setPhase('compose')
+    }
+  }
+
+  function buildCurrent() {
+    if (!prompt.trim() && !photo && !modelFile) return
+    run({ prompt, photo: modelFile ? null : photo, modelFile, studs, variant })
+  }
+
+  function applyTweak(text, boundary = '', mask = null) {
+    const current = modelRef.current
+    const change = (text || '').trim()
+    const limit = (boundary || '').trim()
+    if (!current || current.origin !== 'model' || !change || busy) return
+    ensureChat()
+    const kept = chatRef.current.slice(0, chatIndexRef.current + 1).filter((turn) => turn.status !== 'pending')
+    const sentence = (current.sentence || current.prompt || prompt || '').trim()
+    const earlier = kept
+      .map((turn) => [turn.prompt.trim(), (turn.boundary || '').trim()].filter(Boolean).join('. '))
+      .filter((line) => line && line !== sentence)
+    const id = nextChatId()
+    const painted = mask && ((mask.pieces && mask.pieces.length) || (mask.cells && mask.cells.length))
+      ? {
+          pieces: (mask.pieces || []).map((piece) => ({ ...piece })),
+          cells: (mask.cells || []).map((cell) => ({ ...cell })),
+        }
+      : null
+    const pending = {
+      id,
+      prompt: change,
+      boundary: limit,
+      reply: '',
+      status: 'pending',
+      error: '',
+      model: null,
+      mesh: null,
+    }
+    const nextTurns = [...kept, pending]
+    const keepMeshes = new Set(kept.map((turn) => turn.mesh).filter(Boolean))
+    for (const turn of chatRef.current) {
+      if (turn.mesh && !keepMeshes.has(turn.mesh) && turn.mesh !== meshRef.current) disposeTree(turn.mesh)
+    }
+    publishChat(nextTurns, nextTurns.length - 1)
+    setPanel('ai')
+    run({
+      prompt: sentence,
+      photo: null,
+      modelFile: null,
+      studs,
+      variant: 0,
+      revision: { tweak: fitTweak(earlier, change, limit), tweaks: [] },
+      chatId: id,
+      hold: painted ? { mask: painted, previous: copyModel(current) } : null,
+    })
+  }
+
+  function anotherTake() {
+    if (!model || model.origin === 'file' || model.origin === 'scan' || model.origin === 'manual') return
+    const next = variant + 1
+    setVariant(next)
+    run({ prompt: model.prompt || prompt, photo, modelFile: null, studs, variant: next })
+  }
+
+  function refillMesh(value) {
+    const source = meshRef.current
+    const current = modelRef.current
+    if (!source || !current) return
+    const token = tokenRef.current + 1
+    tokenRef.current = token
+    setBusy(true)
     setPlaying(false)
     setError('')
     const started = performance.now()
     window.setTimeout(() => {
+      if (tokenRef.current !== token) return
       try {
-        const next = request.photo
-          ? designFromPixels(request.photo.data, request.photo.width, request.photo.height, {
-              studs: request.studs,
-              mode: request.mode,
-              name: request.prompt.trim() || request.photo.name || 'Photo',
-              prompt: request.prompt,
-            })
-          : designFromPrompt(request.prompt, request.variant)
-        finish(next, started)
+        const next = fillSource(source, value, {
+          name: current.name,
+          prompt: current.prompt,
+          origin: current.origin,
+          summary: current.summary,
+          spec: current.spec,
+          sentence: current.sentence,
+          tweaks: current.tweaks,
+        })
+        const wait = Math.max(0, 480 - (performance.now() - started))
+        window.setTimeout(() => {
+          if (tokenRef.current !== token) return
+          setModel(next)
+          setCourse(next.courses.length - 1)
+          setFocus(null)
+          setNotes({})
+          setPlaying(false)
+          setView('progress')
+          setBusy(false)
+        }, wait)
       } catch (err) {
+        if (tokenRef.current !== token) return
+        setBusy(false)
         setError(err.message || 'That build did not come together.')
-        setPhase('compose')
       }
     }, 40)
   }
 
-  function buildCurrent() {
-    if (!prompt.trim() && !photo) return
-    run({ prompt, photo, mode, studs, variant })
+  function startManual() {
+    forgetMeshes([])
+    publishChat([], 0)
+    meshRef.current = null
+    setMesh(null)
+    setModel(blankModel())
+    setNotes({})
+    setCourse(0)
+    setFocus(null)
+    setPlaying(false)
+    setView('custom')
+    setGhost(false)
+    setPanel('step')
+    setError('')
+    setBusy(false)
+    setSaved(false)
+    setTool('place')
+    setPhase('studio')
   }
 
-  function buildExample(text) {
-    setPrompt(text)
-    setPhoto(null)
-    setVariant(0)
-    run({ prompt: text, photo: null, mode, studs, variant: 0 })
+  function showBuild(opened) {
+    forgetMeshes([])
+    publishChat([], 0)
+    meshRef.current = null
+    setMesh(null)
+    setModel(opened.model)
+    setNotes(opened.notes || {})
+    setCourse(Math.max(0, opened.model.courses.length - 1))
+    setFocus(null)
+    setPlaying(false)
+    setView('progress')
+    setGhost(false)
+    setPanel('step')
+    setError('')
+    setBusy(false)
+    setSaved(false)
+    setPrompt(opened.model.prompt || '')
+    if (opened.model.grid) setStuds(opened.model.grid)
+    setPhase('studio')
   }
 
-  function anotherTake() {
-    if (!model || photo) return
-    const next = variant + 1
-    setVariant(next)
-    run({ prompt: model.prompt || prompt, photo: null, mode, studs, variant: next })
+  function saveCurrent() {
+    const current = modelRef.current
+    if (!current) return
+    try {
+      const record = rememberBuild(current, notes)
+      current.libraryId = record.id
+      setModel({ ...current, libraryId: record.id })
+      setSaves(listSaves())
+      download(`${slug(record.name)}.json`, JSON.stringify(record.file), 'application/json')
+      setSaved(true)
+      setError('')
+      window.clearTimeout(savedTimer.current)
+      savedTimer.current = window.setTimeout(() => setSaved(false), 1600)
+    } catch (err) {
+      setSaved(false)
+      setError(err.message || 'That build could not be saved.')
+    }
   }
 
-  function rebuildPhoto() {
-    if (!photo) return
-    run({ prompt, photo, mode, studs, variant })
+  function openStored(id) {
+    try {
+      showBuild(openSave(id))
+    } catch (err) {
+      setSaves(listSaves())
+      setError(err.message || 'That saved build could not be opened.')
+    }
+  }
+
+  async function openCourseFile(file) {
+    if (!file) return
+    try {
+      const opened = modelFromCourse(JSON.parse(await file.text()))
+      showBuild(opened)
+    } catch {
+      setError('That file is not a saved build.')
+    }
+  }
+
+  function removeStored(id) {
+    forgetSave(id)
+    setSaves(listSaves())
+  }
+
+  function changeParts(value) {
+    if (modelRef.current?.origin === 'manual') return
+    if (modelRef.current?.origin === 'library' && !meshRef.current) return
+    setStuds(value)
+    window.clearTimeout(partTimer.current)
+    partTimer.current = window.setTimeout(() => {
+      if (meshRef.current && modelRef.current) {
+        refillMesh(value)
+        return
+      }
+      const text = (modelRef.current?.prompt || prompt).trim()
+      if (!text && !photo) return
+      run({ prompt: text, photo, modelFile: null, studs: value, variant })
+    }, 280)
+  }
+
+  function choosePhoto(next) {
+    setPhoto(next)
+    if (next) setModelFile(null)
+  }
+
+  function chooseModel(file) {
+    setModelFile(file)
+    if (file) setPhoto(null)
   }
 
   function togglePlay() {
@@ -156,6 +538,46 @@ export default function App() {
     setPlaying(true)
   }
 
+  function handlePlace(cell) {
+    const next = placePiece(modelRef.current, courseRef.current, {
+      x: cell.x,
+      z: cell.z,
+      w: brush.w,
+      d: brush.d,
+      color: brush.color,
+    })
+    if (!next || next === modelRef.current) return
+    setModel(next)
+    setFocus(null)
+  }
+
+  function handleRemove(pieceIndex) {
+    const next = removePiece(modelRef.current, courseRef.current, pieceIndex)
+    if (!next || next === modelRef.current) return
+    setModel(next)
+    setFocus(null)
+    setCourse((current) => Math.max(0, Math.min(current, next.courses.length - 1)))
+  }
+
+  function handleAddLayer() {
+    const next = addCourse(modelRef.current)
+    if (!next || next === modelRef.current) return
+    setPlaying(false)
+    setModel(next)
+    setCourse(next.courses.length - 1)
+    setFocus(null)
+  }
+
+  function handleInsertLayer() {
+    const index = courseRef.current
+    const next = insertCourse(modelRef.current, index)
+    if (!next || next === modelRef.current) return
+    setPlaying(false)
+    setModel(next)
+    setCourse(Math.min(index + 1, next.courses.length - 1))
+    setFocus(null)
+  }
+
   function addNote(text) {
     const clean = text.trim()
     if (!clean) return
@@ -166,8 +588,8 @@ export default function App() {
   }
 
   return (
-    <div className="app">
-      <div className={`shell ${phase === 'studio' ? 'is-studio' : 'is-compose'}`}>
+    <div className="app" data-origin={model?.origin || ''} data-parts={model ? String(model.stats.parts) : ''} data-busy={busy ? 'true' : 'false'} data-grid={model?.grid ? String(model.grid) : ''}>
+      <div className={`shell ${phase === 'studio' ? 'is-studio' : 'is-compose'}${phase === 'studio' && panel === 'ai' ? ' is-ai' : ''}`}>
         {phase === 'studio' && model ? (
           <Studio
             model={model}
@@ -181,8 +603,10 @@ export default function App() {
             notes={notes[course] || []}
             card={card}
             nonce={nonce}
-            photo={photo}
-            mode={mode}
+            mesh={mesh}
+            busy={busy}
+            error={error}
+            fileModel={model?.origin === 'file'}
             studs={studs}
             onBack={() => {
               setPlaying(false)
@@ -192,35 +616,55 @@ export default function App() {
               setPlaying(false)
               setCourse(index)
             }}
-            onView={setView}
+            onView={(next) => {
+              if (next === 'custom') setPlaying(false)
+              if (next === 'all') setFocus(null)
+              setView(next)
+            }}
             onGhost={setGhost}
             onSpeed={setSpeed}
-            onPanel={setPanel}
+            onPanel={choosePanel}
+            chat={chat}
+            chatIndex={chatIndex}
+            onRestore={restoreChat}
             onFocus={setFocus}
             onCard={setCard}
             onReset={() => setNonce((value) => value + 1)}
             onPlay={togglePlay}
             onNote={addNote}
             onAnother={anotherTake}
-            onMode={setMode}
-            onStuds={setStuds}
-            onRebuild={rebuildPhoto}
+            onTweak={applyTweak}
+            onParts={changeParts}
+            tool={tool}
+            brush={brush}
+            onTool={setTool}
+            onBrush={setBrush}
+            onRotate={() => setBrush((current) => ({ ...current, w: current.d, d: current.w }))}
+            onAddLayer={handleAddLayer}
+            onInsertLayer={handleInsertLayer}
+            onPlace={handlePlace}
+            onRemove={handleRemove}
+            onSave={saveCurrent}
+            saved={saved}
           />
         ) : (
           <Composer
             prompt={prompt}
             photo={photo}
-            mode={mode}
+            modelFile={modelFile}
             studs={studs}
-            examples={EXAMPLES}
             building={phase === 'building'}
             error={error}
             onPrompt={setPrompt}
-            onPhoto={setPhoto}
-            onMode={setMode}
+            onPhoto={choosePhoto}
+            onModel={chooseModel}
             onStuds={setStuds}
-            onExample={buildExample}
             onBuild={buildCurrent}
+            saves={saves}
+            onOpenSave={openStored}
+            onForgetSave={removeStored}
+            onOpenFile={openCourseFile}
+            onManual={startManual}
           />
         )}
       </div>

@@ -1,9 +1,9 @@
-import { packModel } from './pack.js'
+import { coverageOf, packModel, staggerAgainst, supportRatio } from './pack.js'
 import { brickFor, partFor } from './parts.js'
 import { colorByKey } from './palette.js'
 import { PLATE, PLATE_MM, STUD_H_MM, STUD_MM } from './scale.js'
 import { draftFromPixels } from './image.js'
-import { draftFromPrompt } from './sculpt.js'
+import { draftFromPrompt, realize } from './sculpt.js'
 
 let sequence = 1
 
@@ -45,6 +45,14 @@ function sectionFor(plateY, stages) {
 }
 
 function describe(course, prev, stage, stageStart) {
+  if (!course.pieces.length) {
+    return {
+      title: 'Empty layer',
+      name: 'This layer is open. Place a plate to start it.',
+      notes: ['Click the layer to set a plate. Remove lifts a plate off this layer.'],
+      section: course.section || 'Custom',
+    }
+  }
   const top = dominant(course.pieces)
   const notes = []
   if (stageStart && stage?.blurb) notes.push(stage.blurb)
@@ -130,6 +138,7 @@ export function compile(cellMap, meta) {
       z: cell.z,
       color: colorKey,
       kind: cell.kind || 'plate',
+      deep: Boolean(cell.deep),
     })
   }
   if (!list.length) throw new Error('That one came out empty. Try a more specific prompt.')
@@ -241,6 +250,9 @@ export function compile(cellMap, meta) {
     name: meta.name,
     prompt: meta.prompt || '',
     summary: meta.summary || '',
+    technique: meta.technique || '',
+    shiftX,
+    shiftZ,
     courses,
     sections,
     bill,
@@ -267,8 +279,217 @@ export function compile(cellMap, meta) {
   }
 }
 
+/** An empty custom build: one open layer and no plates. */
+export function blankModel() {
+  return {
+    id: sequence++,
+    name: 'Manual build',
+    prompt: '',
+    summary: 'An empty build. Place plates on the grid.',
+    technique: '',
+    origin: 'manual',
+    grid: null,
+    spec: null,
+    sentence: '',
+    tweaks: [],
+    shiftX: 0,
+    shiftZ: 0,
+    sections: [{ name: 'Custom', blurb: '' }],
+    courses: [
+      {
+        y: 0,
+        plateY: 0,
+        index: 0,
+        section: 'Custom',
+        pieces: [],
+        stagger: 1,
+        seamCount: 0,
+        stackedSeams: 0,
+        minSupport: 1,
+        title: 'Empty layer',
+        name: 'This layer is open. Place a plate to start it.',
+        notes: ['Click the layer to set a plate. Remove lifts a plate off this layer.'],
+      },
+    ],
+    bill: [],
+    swaps: [],
+    stats: {
+      parts: 0,
+      lots: 0,
+      studs: 0,
+      grams: 0,
+      dollars: 0,
+      courses: 1,
+      width: 0,
+      depth: 0,
+      bond: 1,
+      minSupport: 1,
+      mm: { w: 0, d: 0, h: PLATE_MM },
+    },
+    heightUnits: PLATE,
+    weakCourses: 0,
+  }
+}
+
+/**
+ * Rebuild bills, clutch, and course copy after a custom edit.
+ * The grid origin stays put so plates already on the build don't jump.
+ */
+export function retouch(model, drafts) {
+  const shiftX = model.shiftX
+  const shiftZ = model.shiftZ
+  let minX = Infinity
+  let maxX = -Infinity
+  let minZ = Infinity
+  let maxZ = -Infinity
+  const courses = drafts.map((draft, index) => {
+    const plateY = draft.plateY
+    const pieces = draft.pieces.map((piece) => {
+      const color = colorByKey(piece.color)
+      const part = partFor(piece.kind, piece.w, piece.d)
+      if (!part) throw new Error(`No part for ${piece.kind} ${piece.w}×${piece.d}`)
+      minX = Math.min(minX, piece.x)
+      maxX = Math.max(maxX, piece.x + piece.w - 1)
+      minZ = Math.min(minZ, piece.z)
+      maxZ = Math.max(maxZ, piece.z + piece.d - 1)
+      return {
+        x: piece.x,
+        y: plateY,
+        z: piece.z,
+        w: piece.w,
+        d: piece.d,
+        color: piece.color,
+        kind: piece.kind,
+        plateY,
+        course: index,
+        part,
+        hex: color.hex,
+        alpha: color.alpha ?? 1,
+        colorName: color.name,
+        colorId: color.id,
+        wx: piece.x + shiftX + (piece.w - 1) / 2,
+        wz: piece.z + shiftZ + (piece.d - 1) / 2,
+        wy: plateY * PLATE + PLATE / 2,
+      }
+    })
+    return {
+      y: plateY,
+      plateY,
+      index,
+      section: draft.section || 'Custom',
+      pieces,
+    }
+  })
+  if (minX === Infinity) throw new Error('A build needs at least one plate.')
+
+  let below = null
+  let belowPieces = null
+  let prevY = null
+  for (const course of courses) {
+    const gap = prevY != null && course.plateY !== prevY + 1
+    const supportBelow = prevY == null || gap ? null : below
+    for (const piece of course.pieces) piece.support = supportBelow ? supportRatio(piece, supportBelow) : 1
+    const bond = staggerAgainst(course.pieces, gap ? null : belowPieces)
+    course.stagger = bond.score
+    course.seamCount = bond.seams
+    course.stackedSeams = bond.stacked
+    course.minSupport = course.pieces.length ? Math.min(...course.pieces.map((piece) => piece.support)) : 1
+    below = coverageOf(course.pieces)
+    belowPieces = course.pieces
+    prevY = course.plateY
+  }
+
+  let prev = null
+  for (const course of courses) {
+    const text = describe(course, prev, null, false)
+    course.title = text.title
+    course.name = text.name
+    course.notes = text.notes
+    prev = course
+  }
+
+  const billMap = new Map()
+  for (const course of courses) {
+    for (const piece of course.pieces) {
+      const key = `${piece.part.number}|${piece.colorId}`
+      const row = billMap.get(key) || {
+        number: piece.part.number,
+        name: piece.part.name,
+        price: piece.part.price,
+        grams: piece.part.grams,
+        studs: piece.part.studs,
+        color: piece.color,
+        colorId: piece.colorId,
+        colorName: piece.colorName,
+        hex: piece.hex,
+        kind: piece.kind,
+        qty: 0,
+      }
+      row.qty += 1
+      billMap.set(key, row)
+    }
+  }
+  const bill = [...billMap.values()].sort(
+    (a, b) => b.qty - a.qty || b.studs - a.studs || a.colorName.localeCompare(b.colorName),
+  )
+  const studs = bill.reduce((sum, line) => sum + line.qty * line.studs, 0)
+  const grams = bill.reduce((sum, line) => sum + line.qty * line.grams, 0)
+  const dollars = Math.round(bill.reduce((sum, line) => sum + line.qty * line.price, 0) * 100) / 100
+  const top = courses[courses.length - 1]
+  const hasStud = top.pieces.some((piece) => piece.kind === 'plate' || piece.kind === 'round1')
+  const heightMm = (top.plateY + 1) * PLATE_MM + (hasStud ? STUD_H_MM : 0)
+  let seams = 0
+  let stacked = 0
+  for (const course of courses) {
+    seams += course.seamCount
+    stacked += course.stackedSeams
+  }
+  const sections = []
+  for (const course of courses) {
+    if (!sections.find((section) => section.name === course.section)) {
+      const previous = model.sections.find((section) => section.name === course.section)
+      sections.push({ name: course.section, blurb: previous?.blurb || '' })
+    }
+  }
+  const minSupport = Math.min(...courses.map((course) => course.minSupport))
+
+  return {
+    ...model,
+    shiftX,
+    shiftZ,
+    courses,
+    sections,
+    bill,
+    swaps: findSwaps(courses),
+    stats: {
+      parts: bill.reduce((sum, line) => sum + line.qty, 0),
+      lots: bill.length,
+      studs,
+      grams: Math.round(grams),
+      dollars,
+      courses: courses.length,
+      width: maxX - minX + 1,
+      depth: maxZ - minZ + 1,
+      bond: seams === 0 ? 1 : 1 - stacked / seams,
+      minSupport,
+      mm: {
+        w: (maxX - minX + 1) * STUD_MM,
+        d: (maxZ - minZ + 1) * STUD_MM,
+        h: heightMm,
+      },
+    },
+    heightUnits: (top.plateY + 1) * PLATE,
+    weakCourses: courses.filter((course) => course.minSupport < 0.5).length,
+  }
+}
+
 export function designFromPrompt(prompt, variant = 0) {
   const draft = draftFromPrompt(prompt, variant)
+  return compile(draft.cells, draft)
+}
+
+export function designFromTechnique(id, prompt, variant = 0) {
+  const draft = realize(id, prompt, variant)
   return compile(draft.cells, draft)
 }
 

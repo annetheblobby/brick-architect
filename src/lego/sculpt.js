@@ -1,3 +1,5 @@
+import { chimneysIn, treeAttachment } from './brief.js'
+import { confidentPick, rankTechniques } from './model.js'
 import { applyLanguage } from './palette.js'
 
 function hashString(value) {
@@ -102,6 +104,31 @@ function box(board, x, z, y0, y1, w, d, role, kind = 'plate') {
   for (let y = y0; y <= y1; y++) rect(board, x, z, y, w, d, role, kind)
 }
 
+function chimneyTotal(ctx) {
+  const asked = Number.isInteger(ctx.chimneys) ? ctx.chimneys : chimneysIn(ctx.prompt)
+  if (!asked) return 1
+  return Math.max(1, Math.min(3, asked))
+}
+
+function wantsYardTree(ctx) {
+  if (ctx.attachTree === true) return true
+  if (ctx.attachTree === false) return false
+  return /\btree\b/i.test(ctx.prompt || '')
+}
+
+/** 2×2 chimney columns. One sits at the original corner; extras step across the ridge. */
+function placeChimneys(board, hx, hz, hw, hd, roofTop, count) {
+  const cz = hz + Math.floor(hd / 2) - 1
+  const spots = [hx + hw - 4]
+  if (count >= 2) spots.unshift(hx + 2)
+  if (count >= 3) spots.splice(1, 0, hx + Math.floor(hw / 2) - 1)
+  for (const cx of spots) {
+    box(board, cx, cz, 6, roofTop, 2, 2, 'chimney')
+    board.put(cx, roofTop + 1, cz, 'knob', 'round1')
+  }
+  return spots.length
+}
+
 function maxY(board) {
   let top = 0
   for (const cell of board.cells.values()) top = Math.max(top, cell.y)
@@ -194,20 +221,23 @@ function cottage(ctx) {
     rd -= 2
     y += 1
   }
-  const cx = hx + hw - 4
-  const cz = hz + Math.floor(hd / 2) - 1
-  box(board, cx, cz, 6, y, 2, 2, 'chimney')
-  board.put(cx, y + 1, cz, 'knob', 'round1')
+  const chimneys = placeChimneys(board, hx, hz, hw, hd, y, chimneyTotal(ctx))
   board.put(1, 1, 2, 'flower', 'round1')
   board.put(2, 1, 13, 'flower2', 'round1')
   board.put(18, 1, 3, 'flower', 'round1')
-  if (/\btree\b/i.test(ctx.prompt)) sapling(board, 1, 11)
+  const yardTree = wantsYardTree(ctx)
+  if (yardTree) sapling(board, 1, 11)
   const top = maxY(board)
+  const chimneyNote =
+    chimneys > 1 ? ` ${chimneys} chimney columns run through the roof, each clutched on the plates under it.` : ''
+  const treeNote = yardTree ? ' A sapling stands in the yard, on its own trunk.' : ''
   return {
     cells: board.cells,
-    summary: barn
+    summary: (barn
       ? 'A solid barn. The big door is one stud deep on the face, and each roof course steps in so it sits fully on the course under it.'
-      : 'A solid microscale cottage. Door and windows are one stud deep, the roof steps in one stud at a time, and the chimney is a column tied through the roof.',
+      : 'A solid microscale cottage. Door and windows are one stud deep, the roof steps in one stud at a time, and the chimney is a column tied through the roof.') +
+      chimneyNote +
+      treeNote,
     stages: [
       { name: 'Yard', from: 0, to: 0, blurb: 'The ground is ordinary plates, not a baseplate, so every course in the set is the same 3.2 mm.' },
       { name: 'Walls', from: 1, to: 7, blurb: 'The house is solid. At this scale a door only needs to be one stud deep to read from the front.' },
@@ -1106,7 +1136,117 @@ const LEAF = (variant) => {
   return sets[variant % sets.length]
 }
 
+function treehouse(ctx) {
+  const board = createBoard()
+  rect(board, 0, 0, 0, 16, 16, 'ground')
+  box(board, 7, 7, 1, 4, 2, 2, 'trunk')
+  rect(board, 7, 6, 5, 2, 4, 'leaf')
+  rect(board, 6, 6, 6, 4, 4, 'leaf')
+  rect(board, 6, 5, 7, 4, 6, 'leaf')
+  rect(board, 5, 5, 8, 6, 6, 'canopy')
+  rect(board, 5, 5, 9, 6, 6, 'leaf')
+  rect(board, 6, 6, 9, 4, 4, 'floor')
+  rect(board, 5, 5, 10, 6, 6, 'leaf2')
+  rect(board, 6, 6, 10, 4, 4, 'wall')
+  rect(board, 6, 6, 11, 4, 4, 'wall')
+  rect(board, 7, 6, 10, 2, 1, 'door')
+  rect(board, 7, 6, 11, 2, 1, 'door')
+  board.put(8, 10, 6, 'knob', 'round1')
+  rect(board, 6, 6, 12, 4, 4, 'roof')
+  const chimneys = Math.min(2, chimneyTotal(ctx))
+  const spots = chimneys === 2 ? [6, 8] : [7]
+  for (const cx of spots) {
+    box(board, cx, 7, 12, 13, 2, 2, 'chimney')
+    board.put(cx, 14, 7, 'knob', 'round1')
+  }
+  board.put(2, 1, 2, 'flower', 'round1')
+  board.put(13, 1, 3, 'flower', 'round1')
+  const top = maxY(board)
+  return {
+    cells: board.cells,
+    summary:
+      'A house stood in the canopy. The trunk flares the same way as the oak, out to a 6×6 platform. The walls are the inner 4×4, so every plate is held, and a ring of leaves stays beside the first wall course.',
+    stages: [
+      { name: 'Ground', from: 0, to: 0, blurb: 'Grass under the trunk. Keep the trunk studs clear of flowers.' },
+      { name: 'Trunk', from: 1, to: 8, blurb: 'The flare is the same legal steps as the oak. Each course is held by at least half its studs.' },
+      { name: 'House', from: 9, to: top, blurb: 'The floor is the inner 4×4 of the platform. Walls, then the roof, then the chimney on studs that are fully clutched.' },
+    ],
+  }
+}
+
+function clockTower(ctx) {
+  const board = createBoard()
+  rect(board, 0, 0, 0, 12, 12, 'plaza')
+  for (let y = 1; y <= 12; y++) rect(board, 3, 3, y, 6, 6, 'wall')
+  rect(board, 5, 3, 1, 2, 1, 'door')
+  rect(board, 5, 3, 2, 2, 1, 'door')
+  board.put(6, 2, 3, 'knob', 'round1')
+  for (let y = 6; y <= 9; y++) {
+    for (let x = 4; x <= 7; x++) {
+      const edge = x === 4 || x === 7 || y === 6 || y === 9
+      board.put(x, y, 3, edge ? 'clock' : 'hand')
+    }
+  }
+  rect(board, 4, 4, 13, 4, 4, 'roof')
+  rect(board, 5, 5, 14, 2, 2, 'roof')
+  board.put(5, 15, 5, 'flag', 'round1')
+  const top = maxY(board)
+  return {
+    cells: board.cells,
+    summary: ctx
+      ? 'A masonry clock tower. The face is a recolor of the front studs, so the shaft stays solid, and the roof steps in on top of it.'
+      : 'A masonry clock tower.',
+    stages: [
+      { name: 'Plaza', from: 0, to: 0, blurb: 'The plaza is wider than the shaft.' },
+      { name: 'Shaft', from: 1, to: 12, blurb: 'A solid 6×6. The clock is the front studs of four courses, ring and hands.' },
+      { name: 'Roof', from: 13, to: top, blurb: 'Step in, then a round plate for the finial.' },
+    ],
+  }
+}
+
 const BUILDERS = [
+  {
+    id: 'treehouse',
+    title: 'Tree house',
+    score: 0,
+    main: 'wall',
+    test: () => false,
+    palette: (variant) => {
+      const walls = ['tan', 'white', 'reddish-brown', 'yellow']
+      const roofs = ['red', 'dark-red', 'blue', 'dark-green']
+      return {
+        ground: 'green',
+        trunk: 'reddish-brown',
+        floor: 'reddish-brown',
+        wall: walls[variant % walls.length],
+        door: 'dark-brown',
+        roof: roofs[variant % roofs.length],
+        chimney: 'dark-bluish-gray',
+        knob: 'pearl-gold',
+        flower: 'bright-pink',
+        ...LEAF(variant),
+      }
+    },
+    build: treehouse,
+  },
+  {
+    id: 'clocktower',
+    title: 'Clock tower',
+    score: 0,
+    main: 'wall',
+    test: () => false,
+    palette: (variant) => ({
+      plaza: 'dark-bluish-gray',
+      wall: ['tan', 'light-bluish-gray', 'white', 'dark-tan'][variant % 4],
+      door: 'reddish-brown',
+      knob: 'pearl-gold',
+      clock: 'white',
+      hand: 'black',
+      roof: 'dark-red',
+      flag: 'red',
+    }),
+    build: clockTower,
+  },
   {
     id: 'lighthouse',
     title: 'Striped lighthouse',
@@ -1545,21 +1685,46 @@ function extractWord(text) {
   return {}
 }
 
+function allBuilders() {
+  return [...BUILDERS, ...SIMPLE, wordBuilder, genericBuilder]
+}
+
+export function builderIds() {
+  return allBuilders().map((builder) => builder.id)
+}
+
+function builderById(id) {
+  return allBuilders().find((builder) => builder.id === id) || null
+}
+
+function pickRegex(text, word) {
+  let builder = null
+  let best = 0
+  for (const candidate of [...BUILDERS, ...SIMPLE]) {
+    const score = candidate.test(text) ? candidate.score : 0
+    if (score > best) {
+      best = score
+      builder = candidate
+    }
+  }
+  if (!builder && word.fallback) builder = wordBuilder
+  return builder
+}
+
 export function draftFromPrompt(prompt, variant = 0) {
   const text = (prompt || '').trim()
   const word = extractWord(text)
   let builder = null
+  let modelP = 0
   if (word.explicit) builder = wordBuilder
   else {
-    let best = 0
-    for (const candidate of [...BUILDERS, ...SIMPLE]) {
-      const score = candidate.test(text) ? candidate.score : 0
-      if (score > best) {
-        best = score
-        builder = candidate
-      }
-    }
-    if (!builder && word.fallback) builder = wordBuilder
+    const ranked = rankTechniques(text)
+    const chosen = confidentPick(ranked)
+    const band = chosen ? ranked.filter((row) => row.p >= chosen.p - 0.08) : []
+    const modelPick = band.length ? band[variant % band.length] : null
+    modelP = modelPick ? modelPick.p : 0
+    if (modelPick) builder = builderById(modelPick.id)
+    if (!builder) builder = pickRegex(text, word)
     if (!builder) builder = genericBuilder
   }
   const palette = applyLanguage(builder.palette(variant, text), text, builder.main)
@@ -1568,6 +1733,8 @@ export function draftFromPrompt(prompt, variant = 0) {
     variant,
     rng: mulberry32(hashString(`${text}:${variant}`)),
     word: word.explicit || word.fallback || '',
+    chimneys: chimneysIn(text),
+    attachTree: treeAttachment(text),
   })
   return {
     cells: built.cells,
@@ -1577,5 +1744,34 @@ export function draftFromPrompt(prompt, variant = 0) {
     main: builder.main,
     name: titleFrom(text, builder.title),
     prompt: text,
+    technique: builder.id,
+    modelP,
+  }
+}
+
+export function realize(id, prompt, variant = 0) {
+  const builder = builderById(id)
+  if (!builder) throw new Error(`Unknown technique ${id}`)
+  const text = (prompt || '').trim()
+  const word = extractWord(text)
+  const palette = applyLanguage(builder.palette(variant, text), text, builder.main)
+  const built = builder.build({
+    prompt: text,
+    variant,
+    rng: mulberry32(hashString(`${text}:${variant}`)),
+    word: word.explicit || word.fallback || '',
+    chimneys: chimneysIn(text),
+    attachTree: treeAttachment(text),
+  })
+  return {
+    cells: built.cells,
+    stages: built.stages,
+    summary: built.summary,
+    palette,
+    main: builder.main,
+    name: titleFrom(text, builder.title),
+    prompt: text,
+    technique: builder.id,
+    modelP: 0,
   }
 }

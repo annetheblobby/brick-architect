@@ -1,0 +1,21 @@
+{
+  "bench": "/bench.html",
+  "source": "Quaternius Ultimate Animated Animals, CC0",
+  "studs": 32,
+  "angles": ["front", "3/4", "side", "rear 3/4", "back"],
+  "note": "Solid body fill. A ray crosses every material, so the torso is filled instead of stamped as a shell.",
+  "before": 0.819,
+  "after": 0.852,
+  "rounds": [
+    { "round": 1, "model": "Alpaca", "before": 0.78, "after": 0.83, "side": 0.84, "parts": 734, "studs": 2882, "hold": 0 },
+    { "round": 2, "model": "Bull", "before": 0.89, "after": 0.90, "side": 0.91, "parts": 710, "studs": 3969, "hold": 0 },
+    { "round": 3, "model": "Cow", "before": 0.86, "after": 0.87, "side": 0.90, "parts": 883, "studs": 3991, "hold": 0 },
+    { "round": 4, "model": "Deer", "before": 0.80, "after": 0.83, "side": 0.87, "parts": 937, "studs": 3687, "hold": 0 },
+    { "round": 5, "model": "Donkey", "before": 0.79, "after": 0.82, "side": 0.84, "parts": 705, "studs": 3300, "hold": 0 },
+    { "round": 6, "model": "Fox", "before": 0.76, "after": 0.79, "side": 0.82, "parts": 305, "studs": 1086, "hold": 0 },
+    { "round": 7, "model": "Horse", "before": 0.85, "after": 0.88, "side": 0.90, "parts": 488, "studs": 2990, "hold": 0 },
+    { "round": 8, "model": "Husky", "before": 0.83, "after": 0.87, "side": 0.89, "parts": 866, "studs": 3698, "hold": 0 },
+    { "round": 9, "model": "Shiba Inu", "before": 0.84, "after": 0.88, "side": 0.90, "parts": 1023, "studs": 4228, "hold": 0 },
+    { "round": 10, "model": "Wolf", "before": 0.81, "after": 0.84, "side": 0.86, "parts": 364, "studs": 1336, "hold": 0 }
+  ]
+}

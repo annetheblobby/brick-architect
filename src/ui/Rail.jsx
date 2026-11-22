@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { pad } from '../lego/format.js'
 import { paintThumb } from './thumbs.js'
 
@@ -14,6 +14,9 @@ function Thumb({ course, width }) {
 
 export default function Rail({ model, course, card, onCourse, onCard }) {
   const scroller = useRef(null)
+  const drag = useRef(null)
+  const [collapsed, setCollapsed] = useState(false)
+  const [shift, setShift] = useState(0)
   const groups = []
   for (const item of model.courses) {
     const last = groups[groups.length - 1]
@@ -29,8 +32,45 @@ export default function Rail({ model, course, card, onCourse, onCard }) {
     root.scrollTo({ left: Math.max(0, left), behavior: 'smooth' })
   }, [course])
 
+  function onGrabDown(event) {
+    if (event.button != null && event.button !== 0) return
+    event.currentTarget.setPointerCapture(event.pointerId)
+    drag.current = { y: event.clientY, collapsed }
+  }
+
+  function onGrabMove(event) {
+    if (!drag.current) return
+    const dy = event.clientY - drag.current.y
+    setShift(drag.current.collapsed ? Math.min(0, dy) : Math.max(0, dy))
+  }
+
+  function onGrabUp(event) {
+    if (!drag.current) return
+    const dy = event.clientY - drag.current.y
+    const wasCollapsed = drag.current.collapsed
+    drag.current = null
+    setShift(0)
+    if (!wasCollapsed && dy > 28) setCollapsed(true)
+    else if (wasCollapsed && dy < -28) setCollapsed(false)
+    else if (Math.abs(dy) <= 6) setCollapsed((open) => !open)
+  }
+
   return (
-    <section className="rail" style={{ '--card': `${card}px` }}>
+    <section className={`rail ${collapsed ? 'is-collapsed' : ''} ${drag.current || shift ? 'is-dragging' : ''}`} style={{ '--card': `${card}px` }}>
+      <button
+        type="button"
+        className="rail-grab"
+        aria-expanded={!collapsed}
+        aria-label={collapsed ? 'Show courses' : 'Hide courses'}
+        onPointerDown={onGrabDown}
+        onPointerMove={onGrabMove}
+        onPointerUp={onGrabUp}
+        onPointerCancel={onGrabUp}
+      >
+        <span />
+      </button>
+      {collapsed ? null : (
+      <div className="rail-body" style={shift ? { transform: `translateY(${shift}px)` } : undefined}>
       <div className="rail-head">
         <span>View</span>
         <span className="size-label">S</span>
@@ -70,6 +110,8 @@ export default function Rail({ model, course, card, onCourse, onCard }) {
           </div>
         ))}
       </div>
+      </div>
+      )}
     </section>
   )
 }

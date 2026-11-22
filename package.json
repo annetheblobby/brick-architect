@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "check": "node src/lego/selfcheck.js"
+    "check": "node src/lego/selfcheck.js",
+    "train": "node src/lego/train.js"
   },
   "dependencies": {
     "@react-three/drei": "^9.117.3",

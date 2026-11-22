@@ -7,7 +7,7 @@ import { isLegal, legalDepths, lengthsFor } from './parts.js'
  * only while half its studs stay clutched.
  */
 
-function supportRatio(piece, below) {
+export function supportRatio(piece, below) {
   if (!below) return 1
   let held = 0
   const total = piece.w * piece.d
@@ -19,7 +19,7 @@ function supportRatio(piece, below) {
   return held / total
 }
 
-function coverageOf(pieces) {
+export function coverageOf(pieces) {
   const set = new Set()
   for (const piece of pieces) {
     for (let dz = 0; dz < piece.d; dz++) {
@@ -227,7 +227,7 @@ function pieceGrid(pieces) {
   return grid
 }
 
-function staggerAgainst(pieces, belowPieces) {
+export function staggerAgainst(pieces, belowPieces) {
   if (!belowPieces) return { score: 1, seams: 0, stacked: 0 }
   const above = pieceGrid(pieces)
   const below = pieceGrid(belowPieces)
