@@ -165,7 +165,11 @@ export function groupFromSpec(spec) {
   return seat(group)
 }
 
-/** Ask the local server for a Tripo mesh, or a new mesh that applies one change. */
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** Ask the server to start a Tripo mesh, then poll until the file is ready. */
 export async function requestMesh(prompt, image, variant = 0, tweak = '', studs = 32) {
   const response = await fetch('/api/mesh', {
     method: 'POST',
@@ -178,8 +182,25 @@ export async function requestMesh(prompt, image, variant = 0, tweak = '', studs 
       studs,
     }),
   })
-  const body = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(body.error || 'The model did not return a mesh.')
-  if (!body.glb) throw new Error('The model returned no mesh.')
-  return body.glb
+  const started = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(started.error || 'The model did not return a mesh.')
+  if (started.glb) return started.glb
+  if (!started.taskId) throw new Error('The model returned no mesh.')
+  const began = Date.now()
+  while (Date.now() - began < 240000) {
+    await sleep(2000)
+    let poll
+    try {
+      poll = await fetch(`/api/mesh?task=${encodeURIComponent(started.taskId)}`)
+    } catch {
+      continue
+    }
+    const body = await poll.json().catch(() => ({}))
+    if (!poll.ok) {
+      if (!body.error) continue
+      throw new Error(body.error)
+    }
+    if (body.glb) return body.glb
+  }
+  throw new Error('Tripo is still working. Try the build again in a minute.')
 }

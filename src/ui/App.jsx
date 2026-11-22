@@ -201,7 +201,7 @@ export default function App() {
   function ensureChat() {
     if (chatRef.current.length) return
     const current = modelRef.current
-    if (!current || current.origin !== 'model') return
+    if (!current || (current.origin !== 'model' && current.origin !== 'scan')) return
     const turn = {
       id: nextChatId(),
       prompt: (current.sentence || '').trim(),
@@ -327,7 +327,7 @@ export default function App() {
     const current = modelRef.current
     const change = (text || '').trim()
     const limit = (boundary || '').trim()
-    if (!current || current.origin !== 'model' || !change || busy) return
+    if (!current || (current.origin !== 'model' && current.origin !== 'scan') || !change || busy) return
     ensureChat()
     const kept = chatRef.current.slice(0, chatIndexRef.current + 1).filter((turn) => turn.status !== 'pending')
     const sentence = (current.sentence || current.prompt || prompt || '').trim()

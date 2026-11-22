@@ -72,11 +72,13 @@ function samplePhoto(onPhoto) {
   image.src = canvas.toDataURL('image/png')
 }
 
+const EXAMPLE_STUDS = 48
+
 const IDEAS = [
-  { id: 'cottage', text: 'A blue cottage with a black roof' },
   { id: 'wolf', text: 'A gray wolf standing on all fours' },
-  { id: 'teapot', text: 'A yellow teapot with a blue lid' },
-  { id: 'light', text: 'A striped lighthouse on a rocky point' },
+  { id: 'fox', text: 'A red fox standing on all fours' },
+  { id: 'horse', text: 'A brown horse standing on all fours' },
+  { id: 'shiba', text: 'A tan shiba inu standing on all fours' },
 ]
 
 function takeFile(file, onPhoto, onModel) {
@@ -409,7 +411,14 @@ export default function Composer({
           <ul className="idea-list">
             {IDEAS.map((idea) => (
               <li key={idea.id}>
-                <button type="button" disabled={building} onClick={() => onPrompt(idea.text)}>
+                <button
+                  type="button"
+                  disabled={building}
+                  onClick={() => {
+                    onPrompt(idea.text)
+                    onStuds(EXAMPLE_STUDS)
+                  }}
+                >
                   <span>{idea.text}</span>
                   <svg className="idea-go" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
                     <path fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" d="M5 12h14M13 6l6 6-6 6" />

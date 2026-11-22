@@ -399,7 +399,7 @@ export default function Studio({
             </span>
           </div>
           <div className="view-actions">
-            {model.origin === 'model' ? (
+            {model.origin === 'model' || model.origin === 'scan' ? (
               <button
                 type="button"
                 className={panel === 'ai' ? 'on' : ''}
@@ -436,7 +436,7 @@ export default function Studio({
               >
                 Step
               </button>
-              {model.origin === 'model' ? (
+              {model.origin === 'model' || model.origin === 'scan' ? (
                 <button type="button" className={panel === 'ai' ? 'on' : ''} onClick={() => onPanel('ai')}>
                   Chat
                 </button>
