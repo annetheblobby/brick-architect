@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { COLORS, OPAQUE } from './palette.js'
 import { PLATE } from './scale.js'
+import { mountFins } from './review.js'
 
 const SWATCHES = OPAQUE.map((color) => {
   const n = parseInt(color.hex.slice(1), 16)
@@ -526,6 +527,7 @@ export function voxelize(group, studs = 30, options = {}) {
       deep: true,
     })
   }
+  mountFins(cells)
   return {
     cells,
     fit: { width: nx, height, depth: nz, studs: cells.size, pitch },

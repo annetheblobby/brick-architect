@@ -4,8 +4,9 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import * as THREE from 'three'
 import { sculptAnimal } from '../lego/animal.js'
 import { compile } from '../lego/design.js'
+import { rubricFor, sectionStages } from '../lego/review.js'
 import { bakeModel, voxelize } from '../lego/voxelize.js'
-import { band, frameObject, legoObject, scoreAngles } from './evaluate.js'
+import { ANGLES, band, frameObject, legoObject, scoreAngles } from './evaluate.js'
 
 const ROUNDS = [
   { id: 'alpaca', name: 'Alpaca', file: 'Alpaca.glb' },
@@ -119,13 +120,14 @@ async function runRound(spec, studs) {
     summary: spec.group
       ? `Sculpted solid, then filled. The narrow side is ${Math.min(solid.fit.width, solid.fit.depth)} studs across.`
       : `Solid plate fill. The narrow side is ${Math.min(solid.fit.width, solid.fit.depth)} studs across.`,
-    stages: [{ name: 'Body', from: 0, to: 999, blurb: 'Plates fill the mesh from the feet up.' }],
+    stages: sectionStages(solid.cells),
     palette: {},
     main: 'wall',
   })
   const lego = legoObject(model)
   const scored = scoreAngles(source, lego)
-  return { spec, source, lego, model, solid, studs, ...scored }
+  const rubric = rubricFor(model, scored.mean)
+  return { spec, source, lego, model, solid, studs, rubric, ...scored }
 }
 
 function disposeTree(root) {
@@ -320,7 +322,7 @@ export default function Bench() {
             <span>Brick fill</span>
             <span className="quiet">
               {current?.model
-                ? `${current.model.stats.parts} parts · hold ${current.model.stats.minSupport.toFixed(2)} · ${current.model.weakCourses} weak`
+                ? `${current.model.stats.parts} parts · hold ${current.model.stats.minSupport.toFixed(2)} · look ${current.rubric ? current.rubric.mean.toFixed(1) : '—'}`
                 : 'Plates inside the mesh'}
             </span>
           </div>
@@ -379,7 +381,9 @@ export default function Bench() {
               <th>Side</th>
               <th>Rear 3/4</th>
               <th>Back</th>
+              <th>Under</th>
               <th>Match</th>
+              <th>Look</th>
               <th>Was</th>
               <th>Change</th>
               <th>Hold</th>
@@ -402,8 +406,11 @@ export default function Bench() {
                   </td>
                   {scores.length
                     ? scores.map((item) => <td key={item.id}>{pct(item.score)}</td>)
-                    : [0, 1, 2, 3, 4].map((slot) => <td key={slot}>{row?.error ? 'fail' : '…'}</td>)}
+                    : ANGLES.map((angle) => (
+                        <td key={angle.id}>{row?.error ? 'fail' : '…'}</td>
+                      ))}
                   <td>{row?.mean != null ? `${pct(row.mean)} ${band(row.mean)}` : row?.error ? 'fail' : '…'}</td>
+                  <td>{row?.rubric ? row.rubric.mean.toFixed(1) : row?.error ? 'fail' : '…'}</td>
                   <td>{pct(previousMean)}</td>
                   <td className={change == null ? '' : change >= 0 ? 'delta-up' : 'delta-down'}>
                     {change == null ? (row?.mean != null ? '—' : '…') : signed(change)}

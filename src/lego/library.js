@@ -16,6 +16,8 @@ export function courseFile(model, notes) {
     technique: model?.technique || '',
     grid: model?.grid || null,
     sentence: model?.sentence || '',
+    origin: model?.origin || '',
+    generated: model?.origin === 'model' ? 'AI-GENERATED' : model?.origin || '',
     tweaks: Array.isArray(model?.tweaks) ? model.tweaks.slice(-8) : [],
     shiftX: Number(model?.shiftX) || 0,
     shiftZ: Number(model?.shiftZ) || 0,
@@ -34,6 +36,8 @@ export function courseFile(model, notes) {
         d: piece.d,
         color: piece.color,
         kind: piece.kind,
+        mount: piece.mount || '',
+        axis: piece.axis || '',
       })),
     })),
   }
@@ -63,7 +67,12 @@ function pieceOf(raw) {
   const z = Math.round(Number(raw?.z))
   const color = typeof raw?.color === 'string' ? raw.color : ''
   if (!Number.isFinite(x) || !Number.isFinite(z) || !isLegal(kind, w, d) || !COLORS[color]) return null
-  return { x, z, w, d, color, kind }
+  const piece = { x, z, w, d, color, kind }
+  if (raw.mount === 'side') {
+    piece.mount = 'side'
+    piece.axis = raw.axis === 'z' ? 'z' : 'x'
+  }
+  return piece
 }
 
 /** Turn a saved file back into a model the studio can show. */
@@ -88,7 +97,7 @@ export function modelFromCourse(data) {
     prompt: typeof data.prompt === 'string' ? data.prompt : '',
     summary: typeof data.summary === 'string' && data.summary ? data.summary : 'Opened from a saved build.',
     technique: typeof data.technique === 'string' ? data.technique : '',
-    origin: 'library',
+    origin: ['scan', 'model', 'manual', 'file', 'library'].includes(data.origin) ? data.origin : 'library',
     grid: Number(data.grid) || null,
     spec: null,
     sentence: typeof data.sentence === 'string' ? data.sentence : '',

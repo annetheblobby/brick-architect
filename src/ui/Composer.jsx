@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { isModelFile, partLevel, scaleText, STUD_MAX, STUD_MIN, STUD_STEP } from '../lego/promptmesh.js'
+
+const STYLES = [
+  { id: 'realistic', label: 'Realistic', detail: 'Natural proportions and real materials.' },
+  { id: 'cartoon', label: 'Cartoon', detail: 'Block colors, with little or no gradient.' },
+  { id: 'relief', label: 'Relief', detail: 'A shallow sculpture raised from a flat back.' },
+  { id: 'mosaic', label: 'Mosaic', detail: 'Flat color patches, like a tile mosaic.' },
+]
 import { COLORS } from '../lego/palette.js'
 import { PixelGame } from './PixelGame.jsx'
 
@@ -151,12 +158,14 @@ export default function Composer({
   photo,
   modelFile,
   studs,
+  style,
   building,
   error,
   onPrompt,
   onPhoto,
   onModel,
   onStuds,
+  onStyle,
   onBuild,
   saves,
   onOpenSave,
@@ -167,22 +176,27 @@ export default function Composer({
   const [over, setOver] = useState(false)
   const [attachOpen, setAttachOpen] = useState(false)
   const [sizeOpen, setSizeOpen] = useState(false)
+  const [styleOpen, setStyleOpen] = useState(false)
   const [list, setList] = useState('ideas')
   const attachRef = useRef(null)
   const sizeRef = useRef(null)
+  const styleRef = useRef(null)
+  const styleName = STYLES.find((item) => item.id === style)?.label || 'Realistic'
   const ready = Boolean(prompt.trim() || photo || modelFile)
   const attached = photo?.name || modelFile?.name || ''
 
   useEffect(() => {
-    if (!attachOpen && !sizeOpen) return undefined
+    if (!attachOpen && !sizeOpen && !styleOpen) return undefined
     function onPointer(event) {
       if (attachOpen && !attachRef.current?.contains(event.target)) setAttachOpen(false)
       if (sizeOpen && !sizeRef.current?.contains(event.target)) setSizeOpen(false)
+      if (styleOpen && !styleRef.current?.contains(event.target)) setStyleOpen(false)
     }
     function onKey(event) {
       if (event.key === 'Escape') {
         setAttachOpen(false)
         setSizeOpen(false)
+        setStyleOpen(false)
       }
     }
     document.addEventListener('pointerdown', onPointer)
@@ -191,7 +205,7 @@ export default function Composer({
       document.removeEventListener('pointerdown', onPointer)
       document.removeEventListener('keydown', onKey)
     }
-  }, [attachOpen, sizeOpen])
+  }, [attachOpen, sizeOpen, styleOpen])
 
   return (
     <div className="composer">
@@ -263,6 +277,7 @@ export default function Composer({
                   aria-expanded={attachOpen}
                   onClick={() => {
                     setSizeOpen(false)
+                    setStyleOpen(false)
                     setAttachOpen((open) => !open)
                   }}
                 >
@@ -345,6 +360,7 @@ export default function Composer({
                   aria-haspopup="dialog"
                   onClick={() => {
                     setAttachOpen(false)
+                    setStyleOpen(false)
                     setSizeOpen((open) => !open)
                   }}
                 >
@@ -370,6 +386,45 @@ export default function Composer({
                       <span>More</span>
                     </label>
                     <p>{scaleText(studs)}. Each step is 8 studs, 6.4 cm.</p>
+                  </div>
+                ) : null}
+              </div>
+              <div className="size-control" ref={styleRef}>
+                <button
+                  type="button"
+                  className={`ask-pill ${styleOpen ? 'on' : ''}`}
+                  aria-expanded={styleOpen}
+                  aria-haspopup="menu"
+                  aria-label={`Style, ${styleName}`}
+                  onClick={() => {
+                    setAttachOpen(false)
+                    setSizeOpen(false)
+                    setStyleOpen((open) => !open)
+                  }}
+                >
+                  {styleName}
+                  <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+                    <path fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" d="M4 6l4 4 4-4" />
+                  </svg>
+                </button>
+                {styleOpen ? (
+                  <div className="size-menu style-menu" role="menu" aria-label="Model style">
+                    {STYLES.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={style === item.id}
+                        className={style === item.id ? 'on' : ''}
+                        onClick={() => {
+                          onStyle(item.id)
+                          setStyleOpen(false)
+                        }}
+                      >
+                        <strong>{item.label}</strong>
+                        <span>{item.detail}</span>
+                      </button>
+                    ))}
                   </div>
                 ) : null}
               </div>

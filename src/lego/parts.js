@@ -130,6 +130,39 @@ export function legalDepths(w, kind) {
   return [...set].sort((a, b) => b - a)
 }
 
+/** One-plate-tall catalog items, listed once per design ID the way BrickLink does. */
+export function catalog() {
+  const items = []
+  const push = (kind, dims, label) => {
+    for (const [w, d, number, price, grams] of dims) {
+      items.push({ kind, w, d, number, name: `${label} ${w} x ${d}`, price, grams, studs: w * d })
+    }
+  }
+  push('plate', PLATE_DIMS, 'Plate')
+  push('tile', TILE_DIMS, 'Tile')
+  items.push({
+    kind: 'round1',
+    w: 1,
+    d: 1,
+    number: '4073',
+    name: 'Plate, Round 1 x 1',
+    price: 0.06,
+    grams: 0.12,
+    studs: 1,
+  })
+  items.push({
+    kind: 'round2',
+    w: 2,
+    d: 2,
+    number: '4032',
+    name: 'Plate, Round 2 x 2',
+    price: 0.1,
+    grams: 0.37,
+    studs: 4,
+  })
+  return items
+}
+
 export function brickFor(w, d) {
   const a = Math.min(w, d)
   const b = Math.max(w, d)

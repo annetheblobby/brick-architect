@@ -1,4 +1,5 @@
 import { coverageOf, packModel, staggerAgainst, supportRatio } from './pack.js'
+import { reviewBuild } from './review.js'
 import { brickFor, partFor } from './parts.js'
 import { colorByKey } from './palette.js'
 import { PLATE, PLATE_MM, STUD_H_MM, STUD_MM } from './scale.js'
@@ -38,6 +39,29 @@ function dominant(pieces) {
     counts.set(key, (counts.get(key) || 0) + 1)
   }
   return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]
+}
+
+function braceSide(course) {
+  const planted = new Set()
+  for (const piece of course.pieces) {
+    if (piece.mount === 'side') continue
+    for (let dz = 0; dz < piece.d; dz++) {
+      for (let dx = 0; dx < piece.w; dx++) planted.add(`${piece.x + dx}|${piece.z + dz}`)
+    }
+  }
+  for (const piece of course.pieces) {
+    if (piece.mount !== 'side') continue
+    let held = false
+    for (let dz = 0; dz < piece.d && !held; dz++) {
+      for (let dx = 0; dx < piece.w && !held; dx++) {
+        const x = piece.x + dx
+        const z = piece.z + dz
+        held = planted.has(`${x + 1}|${z}`) || planted.has(`${x - 1}|${z}`) || planted.has(`${x}|${z + 1}`) || planted.has(`${x}|${z - 1}`)
+      }
+    }
+    if (held) piece.support = Math.max(piece.support || 0, 1)
+  }
+  if (course.pieces.length) course.minSupport = Math.min(...course.pieces.map((piece) => piece.support ?? 1))
 }
 
 function sectionFor(plateY, stages) {
@@ -186,8 +210,9 @@ export function compile(cellMap, meta) {
     for (const piece of course.pieces) {
       piece.wx = piece.x + shiftX + (piece.w - 1) / 2
       piece.wz = piece.z + shiftZ + (piece.d - 1) / 2
-      piece.wy = piece.plateY * PLATE + PLATE / 2
+      piece.wy = piece.mount === 'side' ? piece.plateY * PLATE + 0.5 : piece.plateY * PLATE + PLATE / 2
     }
+    braceSide(course)
   }
 
   let prev = null
@@ -197,7 +222,16 @@ export function compile(cellMap, meta) {
     const start = stage ? !seenSection.has(stage.name) : false
     if (stage) seenSection.add(stage.name)
     Object.assign(course, describe(course, prev, stage, start))
+    if (course.pieces.some((piece) => piece.mount === 'side')) {
+      course.notes.push('A thin part here is a tile turned on its side, so it stays one stud tall instead of a stack of plates.')
+    }
     prev = course
+  }
+
+  const review = reviewBuild(courses)
+  for (const warning of review.warnings) {
+    const course = courses[warning.course]
+    if (course && !course.notes.includes(warning.text)) course.notes.push(warning.text)
   }
 
   const billMap = new Map()
@@ -267,7 +301,7 @@ export function compile(cellMap, meta) {
       width: maxX - minX + 1,
       depth: maxZ - minZ + 1,
       bond: seams === 0 ? 1 : 1 - stacked / seams,
-      minSupport: packed.minSupport,
+      minSupport: courses.length ? Math.min(...courses.map((course) => course.minSupport)) : 1,
       mm: {
         w: (maxX - minX + 1) * STUD_MM,
         d: (maxZ - minZ + 1) * STUD_MM,
@@ -276,6 +310,7 @@ export function compile(cellMap, meta) {
     },
     heightUnits: (top.plateY + 1) * PLATE,
     weakCourses: courses.filter((course) => course.minSupport < 0.5).length,
+    review,
   }
 }
 
@@ -369,7 +404,9 @@ export function retouch(model, drafts) {
         colorId: color.id,
         wx: piece.x + shiftX + (piece.w - 1) / 2,
         wz: piece.z + shiftZ + (piece.d - 1) / 2,
-        wy: plateY * PLATE + PLATE / 2,
+        wy: piece.mount === 'side' ? plateY * PLATE + 0.5 : plateY * PLATE + PLATE / 2,
+        mount: piece.mount || '',
+        axis: piece.axis || '',
       }
     })
     return {
@@ -394,6 +431,7 @@ export function retouch(model, drafts) {
     course.seamCount = bond.seams
     course.stackedSeams = bond.stacked
     course.minSupport = course.pieces.length ? Math.min(...course.pieces.map((piece) => piece.support)) : 1
+    braceSide(course)
     below = coverageOf(course.pieces)
     belowPieces = course.pieces
     prevY = course.plateY
@@ -405,7 +443,15 @@ export function retouch(model, drafts) {
     course.title = text.title
     course.name = text.name
     course.notes = text.notes
+    if (course.pieces.some((piece) => piece.mount === 'side')) {
+      course.notes.push('A thin part here is a tile turned on its side, so it stays one stud tall instead of a stack of plates.')
+    }
     prev = course
+  }
+  const review = reviewBuild(courses)
+  for (const warning of review.warnings) {
+    const course = courses[warning.course]
+    if (course && !course.notes.includes(warning.text)) course.notes.push(warning.text)
   }
 
   const billMap = new Map()
@@ -480,6 +526,7 @@ export function retouch(model, drafts) {
     },
     heightUnits: (top.plateY + 1) * PLATE,
     weakCourses: courses.filter((course) => course.minSupport < 0.5).length,
+    review,
   }
 }
 

@@ -170,7 +170,7 @@ function sleep(ms) {
 }
 
 /** Ask the server to start a Tripo mesh, then poll until the file is ready. */
-export async function requestMesh(prompt, image, variant = 0, tweak = '', studs = 32) {
+export async function requestMesh(prompt, image, variant = 0, tweak = '', studs = 32, style = 'realistic') {
   const response = await fetch('/api/mesh', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -180,6 +180,7 @@ export async function requestMesh(prompt, image, variant = 0, tweak = '', studs 
       tweak: (tweak || '').trim(),
       variant: tweak ? 0 : variant,
       studs,
+      style,
     }),
   })
   const started = await response.json().catch(() => ({}))

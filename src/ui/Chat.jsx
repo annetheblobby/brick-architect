@@ -22,6 +22,7 @@ export default function Chat({
   boundary,
   drawHint,
   onToggleDraw,
+  onUndoDraw,
   onClearDraw,
   onSend,
   onRestore,
@@ -99,6 +100,9 @@ export default function Chat({
           {boundary ? (
             <p className="boundary-live">
               <span>{boundary}</span>
+              <button type="button" onClick={onUndoDraw} disabled={busy}>
+                Undo
+              </button>
               <button type="button" onClick={onClearDraw} disabled={busy}>
                 Clear
               </button>

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 import { markPoints } from './draw.js'
 
 function paint(canvas, strokes) {
@@ -16,9 +16,9 @@ function paint(canvas, strokes) {
   ctx.lineCap = 'round'
   ctx.lineJoin = 'round'
   for (const stroke of strokes) {
-    if (stroke.length < 1) continue
-    trace(ctx, stroke, 26, 'rgba(59, 108, 240, 0.18)')
-    trace(ctx, stroke, 14, 'rgba(59, 108, 240, 0.4)')
+    if (!stroke.points.length) continue
+    trace(ctx, stroke.points, 26, 'rgba(59, 108, 240, 0.18)')
+    trace(ctx, stroke.points, 14, 'rgba(59, 108, 240, 0.4)')
   }
 }
 
@@ -35,12 +35,33 @@ function trace(ctx, stroke, width, color) {
   ctx.stroke()
 }
 
-export default function DrawMask({ active, viewRef, model, course, view, ghost, nonce, frame, onMark }) {
+const DrawMask = forwardRef(function DrawMask(
+  { active, viewRef, model, course, view, ghost, nonce, frame, onPreview, onCommit },
+  ref,
+) {
   const canvasRef = useRef(null)
   const strokes = useRef([])
   const current = useRef(null)
   const props = useRef({})
-  props.current = { active, viewRef, model, course, view, ghost, onMark }
+  props.current = { active, viewRef, model, course, view, ghost, onPreview, onCommit }
+
+  useImperativeHandle(ref, () => ({
+    cancelLive() {
+      const stroke = current.current
+      if (!stroke) return false
+      current.current = null
+      strokes.current = strokes.current.filter((item) => item !== stroke)
+      repaint()
+      return true
+    },
+    dropLast() {
+      if (current.current) return false
+      if (!strokes.current.length) return false
+      strokes.current = strokes.current.slice(0, -1)
+      repaint()
+      return true
+    },
+  }))
 
   function repaint() {
     const canvas = canvasRef.current
@@ -87,8 +108,8 @@ export default function DrawMask({ active, viewRef, model, course, view, ghost, 
     }
   }
 
-  function absorb(points) {
-    const { viewRef: glance, model: build, course: layer, view: mode, ghost: showGhost, onMark: report } = props.current
+  function absorb(stroke, points) {
+    const { viewRef: glance, model: build, course: layer, view: mode, ghost: showGhost, onPreview: report } = props.current
     const camera = glance.current?.camera
     const source = glance.current?.canvas
     if (!camera || !source) return
@@ -100,7 +121,22 @@ export default function DrawMask({ active, viewRef, model, course, view, ghost, 
       view: mode,
       ghost: showGhost,
     })
-    if (found.pieces.length || found.cells.length) report(found)
+    if (found.pieces.length || found.cells.length) {
+      const seenPieces = new Set(stroke.pieces.map((piece) => piece.key))
+      const seenCells = new Set(stroke.cells.map((cell) => `${cell.x}|${cell.z}`))
+      for (const piece of found.pieces) {
+        if (seenPieces.has(piece.key)) continue
+        seenPieces.add(piece.key)
+        stroke.pieces.push(piece)
+      }
+      for (const cell of found.cells) {
+        const key = `${cell.x}|${cell.z}`
+        if (seenCells.has(key)) continue
+        seenCells.add(key)
+        stroke.cells.push(cell)
+      }
+    }
+    report({ pieces: stroke.pieces, cells: stroke.cells })
   }
 
   function onDown(event) {
@@ -112,18 +148,18 @@ export default function DrawMask({ active, viewRef, model, course, view, ghost, 
       // A real drag captures the pointer. A missed capture still follows move events on the mask.
     }
     const point = localPoint(event)
-    const stroke = [point]
+    const stroke = { points: [point], pieces: [], cells: [] }
     current.current = stroke
     strokes.current = [...strokes.current, stroke]
     repaint()
-    absorb([point])
+    absorb(stroke, [point])
   }
 
   function onMove(event) {
     const stroke = current.current
     if (!stroke) return
     const point = localPoint(event)
-    const last = stroke[stroke.length - 1]
+    const last = stroke.points[stroke.points.length - 1]
     const dist = Math.hypot(point.x - last.x, point.y - last.y)
     if (dist < 3) return
     const steps = Math.max(1, Math.round(dist / 8))
@@ -136,15 +172,24 @@ export default function DrawMask({ active, viewRef, model, course, view, ghost, 
         clientX: last.clientX + (point.clientX - last.clientX) * t,
         clientY: last.clientY + (point.clientY - last.clientY) * t,
       }
-      stroke.push(next)
+      stroke.points.push(next)
       added.push(next)
     }
     repaint()
-    absorb(added)
+    absorb(stroke, added)
   }
 
   function onUp() {
+    const stroke = current.current
     current.current = null
+    if (!stroke) return
+    if (!stroke.pieces.length && !stroke.cells.length) {
+      strokes.current = strokes.current.filter((item) => item !== stroke)
+      repaint()
+      props.current.onPreview(null)
+      return
+    }
+    props.current.onCommit({ pieces: stroke.pieces, cells: stroke.cells })
   }
 
   return (
@@ -159,4 +204,6 @@ export default function DrawMask({ active, viewRef, model, course, view, ghost, 
       onContextMenu={(event) => event.preventDefault()}
     />
   )
-}
+})
+
+export default DrawMask

@@ -302,3 +302,127 @@ export function holdOutside(prev, next, mask) {
       : 'Revised inside the drawn space. Everything outside stayed as it was.',
   }
 }
+
+function localVerb(text) {
+  const line = (text || '').toLowerCase()
+  if (/\b(remove|delete|erase|cut)\b/.test(line)) return 'remove'
+  if (/\b(taller|higher|raise|thicker|add)\b/.test(line)) return 'taller'
+  if (/\b(shorter|lower|thinner)\b/.test(line)) return 'shorter'
+  if (/\b(fill|solid|close|join)\b/.test(line)) return 'fill'
+  return ''
+}
+
+/**
+ * Repack only the drawn columns for a simple change. Anything else returns null
+ * so the caller can send the sentence on.
+ */
+export function localRevision(model, mask, text) {
+  const verb = localVerb(text)
+  if (!verb || !model || !hasMask(mask)) return null
+  const columns = new Set([...unlockPainted(mask).keys(), ...spaceSet(mask)])
+  if (!columns.size) return null
+  const cells = []
+  for (const course of model.courses) {
+    for (const piece of course.pieces) {
+      for (let dz = 0; dz < piece.d; dz++) {
+        for (let dx = 0; dx < piece.w; dx++) {
+          cells.push({
+            x: piece.x + dx,
+            y: piece.plateY,
+            z: piece.z + dz,
+            color: piece.color,
+            kind: piece.mount === 'side' ? 'tile' : cellKind(piece.kind),
+            mount: piece.mount || '',
+            axis: piece.axis || '',
+          })
+        }
+      }
+    }
+  }
+  const idOf = (cell) => `${cell.x}|${cell.y}|${cell.z}`
+  const occupied = new Set(cells.map(idOf))
+  const byColumn = new Map()
+  for (const cell of cells) {
+    const id = `${cell.x}|${cell.z}`
+    const list = byColumn.get(id)
+    if (list) list.push(cell)
+    else byColumn.set(id, [cell])
+  }
+  let changed = false
+  if (verb === 'remove') {
+    const drop = new Set()
+    for (const mark of mask.pieces || []) {
+      if (![mark.x, mark.z, mark.w, mark.d, mark.plateY].every((n) => Number.isFinite(n))) continue
+      for (let dz = 0; dz < mark.d; dz++) {
+        for (let dx = 0; dx < mark.w; dx++) drop.add(`${mark.x + dx}|${mark.plateY}|${mark.z + dz}`)
+      }
+    }
+    for (const column of spaceSet(mask)) {
+      for (const cell of byColumn.get(column) || []) drop.add(idOf(cell))
+    }
+    for (let i = cells.length - 1; i >= 0; i--) {
+      if (!drop.has(idOf(cells[i]))) continue
+      cells.splice(i, 1)
+      changed = true
+    }
+  }
+  for (const column of columns) {
+    const stack = (byColumn.get(column) || []).slice().sort((a, b) => a.y - b.y)
+    if (!stack.length) continue
+    if (verb === 'taller') {
+      const top = stack[stack.length - 1]
+      const next = { x: top.x, y: top.y + 1, z: top.z, color: top.color, kind: 'plate', mount: '', axis: '' }
+      if (!occupied.has(idOf(next))) {
+        cells.push(next)
+        occupied.add(idOf(next))
+        changed = true
+      }
+    } else if (verb === 'shorter' && stack.length > 1) {
+      const top = stack[stack.length - 1]
+      const index = cells.findIndex((cell) => cell.x === top.x && cell.y === top.y && cell.z === top.z)
+      if (index >= 0) {
+        cells.splice(index, 1)
+        changed = true
+      }
+    } else if (verb === 'fill') {
+      const present = new Set(stack.map((cell) => cell.y))
+      for (let y = stack[0].y + 1; y < stack[stack.length - 1].y; y++) {
+        if (present.has(y)) continue
+        const below = [...stack].reverse().find((cell) => cell.y < y)
+        if (!below || y - below.y > 3) continue
+        const next = { x: below.x, y, z: below.z, color: below.color, kind: 'plate', mount: '', axis: '' }
+        if (occupied.has(idOf(next))) continue
+        cells.push(next)
+        occupied.add(idOf(next))
+        changed = true
+      }
+    }
+  }
+  if (!changed) return { model, changed: false }
+  const packed = packModel(cells)
+  const drafts = packed.courses.map((course) => ({
+    plateY: course.y,
+    section: sectionFor(model, course.y),
+    pieces: course.pieces.map((piece) => ({
+      x: piece.x,
+      z: piece.z,
+      w: piece.w,
+      d: piece.d,
+      color: piece.color,
+      kind: piece.kind,
+      mount: piece.mount || '',
+      axis: piece.axis || '',
+    })),
+  }))
+  const next = retouch(model, drafts)
+  next.origin = model.origin
+  next.sentence = model.sentence
+  next.prompt = model.prompt
+  next.grid = model.grid
+  next.spec = model.spec
+  next.tweaks = model.tweaks
+  next.name = model.name
+  next.summary = verb === 'remove' ? 'Removed the bricks in the drawn area.' : 'Revised the drawn area on the current build.'
+  return { model: next, changed: true }
+}
+

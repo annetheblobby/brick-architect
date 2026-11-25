@@ -45,20 +45,6 @@ function spanOf(model) {
   return { minX: minX - 16, maxX: maxX + 16, minZ: minZ - 16, maxZ: maxZ + 16 }
 }
 
-function topByStud(pieces) {
-  const map = new Map()
-  for (const piece of pieces) {
-    for (let dz = 0; dz < piece.d; dz += 1) {
-      for (let dx = 0; dx < piece.w; dx += 1) {
-        const key = `${piece.x + dx}|${piece.z + dz}`
-        const prev = map.get(key)
-        if (!prev || piece.plateY >= prev.plateY) map.set(key, piece)
-      }
-    }
-  }
-  return map
-}
-
 function pieceKey(piece) {
   return `${piece.course}|${piece.plateY}|${piece.x}|${piece.z}|${piece.w}|${piece.d}|${piece.color}`
 }
@@ -81,15 +67,16 @@ function pieceMark(piece) {
   }
 }
 
-function closestPiece(ray, pieces, target) {
+function closestPiece(ray, pieces) {
   let best = null
   let bestDist = Infinity
+  const scratch = new THREE.Vector3()
   for (const piece of pieces) {
     const box = new THREE.Box3(
       new THREE.Vector3(piece.wx - piece.w / 2, piece.wy - BODY_H / 2, piece.wz - piece.d / 2),
       new THREE.Vector3(piece.wx + piece.w / 2, piece.wy + BODY_H / 2 + STUD_H, piece.wz + piece.d / 2),
     )
-    const point = ray.intersectBox(box, target)
+    const point = ray.intersectBox(box, scratch)
     if (!point) continue
     const dist = point.distanceToSquared(ray.origin)
     if (dist < bestDist) {
@@ -106,12 +93,10 @@ export function markPoints(points, { camera, rect, model, course, view, ghost })
   const cells = []
   if (!camera || !rect?.width || !rect?.height || view === 'model') return { pieces, cells }
   const visible = visiblePieces(model, course, view, ghost)
-  const tops = topByStud(visible)
   const span = spanOf(model)
   const shiftX = model.shiftX || 0
   const shiftZ = model.shiftZ || 0
   const raycaster = new THREE.Raycaster()
-  const boxHit = new THREE.Vector3()
   const groundHit = new THREE.Vector3()
   const ground = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)
   const seenPieces = new Set()
@@ -139,10 +124,13 @@ export function markPoints(points, { camera, rect, model, course, view, ghost })
       ),
       camera,
     )
-    const piece = closestPiece(raycaster.ray, visible, boxHit)
-    if (piece) rememberPiece(piece)
+    const hit = closestPiece(raycaster.ray, visible)
+    if (hit) {
+      rememberPiece(hit)
+      continue
+    }
 
-    // Always record the stud column under the stroke — the drawn space, not only parts.
+    // Open baseplate only. A brick hit must not also keep the stud where the ray meets the floor.
     if (!raycaster.ray.intersectPlane(ground, groundHit)) continue
     const travel = groundHit.clone().sub(raycaster.ray.origin).dot(raycaster.ray.direction)
     if (travel <= 0 || travel > 80) continue
@@ -150,10 +138,12 @@ export function markPoints(points, { camera, rect, model, course, view, ghost })
     const z = Math.round(groundHit.z - shiftZ)
     if (x < span.minX || x > span.maxX || z < span.minZ || z > span.maxZ) continue
     rememberCell(x, z)
-    const standing = tops.get(`${x}|${z}`)
-    if (standing) rememberPiece(standing)
   }
   return { pieces, cells }
+}
+
+export function maskFromStrokes(strokes) {
+  return (strokes || []).reduce((mask, stroke) => mergeMask(mask, stroke), emptyMask())
 }
 
 export function mergeMask(prev, found) {

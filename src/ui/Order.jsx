@@ -62,6 +62,25 @@ export default function Order({ model, focus, onFocus }) {
           Showing {focus.colorName} {focus.name}. Show everything.
         </button>
       )}
+      {model.changes && (model.changes.added.length || model.changes.removed.length) ? (
+        <div className="bill-changes">
+          <h3>Since the last build</h3>
+          <ul>
+            {model.changes.removed.map((line) => (
+              <li key={`off-${line.number}-${line.colorId}`}>
+                <span className="swatch" style={{ background: line.hex }} />
+                −{line.qty}× {line.colorName} {line.name}
+              </li>
+            ))}
+            {model.changes.added.map((line) => (
+              <li key={`on-${line.number}-${line.colorId}`}>
+                <span className="swatch" style={{ background: line.hex }} />
+                +{line.qty}× {line.colorName} {line.name}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       <ul className="bill">
         {model.bill.map((line) => {
           const on = focus && focus.color === line.color && focus.number === line.number

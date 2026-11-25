@@ -5,6 +5,7 @@ import { PLYLoader } from 'three/addons/loaders/PLYLoader.js'
 import { STLLoader } from 'three/addons/loaders/STLLoader.js'
 import { groupFromSpec, requestMesh } from './aimsh.js'
 import { compile } from './design.js'
+import { sectionStages } from './review.js'
 import { STUD_MM } from './scale.js'
 import { bakeModel, voxelize } from './voxelize.js'
 
@@ -72,7 +73,7 @@ function parseGlb(glb) {
  * A stored animal scan when the sentence names one and no picture is attached.
  * Every other sentence or picture is built by Tripo, then filled.
  */
-export async function modelFromPrompt(prompt, studs, variant = 0, image = null, revision = null) {
+export async function modelFromPrompt(prompt, studs, variant = 0, image = null, revision = null, style = 'realistic') {
   const text = (prompt || '').trim()
   const tweak = (revision?.tweak || '').trim()
   if (!text && !image && !tweak) throw new Error('Type a sentence, add a picture, or use both.')
@@ -90,7 +91,7 @@ export async function modelFromPrompt(prompt, studs, variant = 0, image = null, 
     name = scan.name
     origin = 'scan'
   } else {
-    const glb = await requestMesh(text, image, variant, tweak, grid)
+    const glb = await requestMesh(text, image, variant, tweak, grid, style)
     const gltf = await parseGlb(glb)
     source = bakeModel(gltf.scene)
     disposeTree(gltf.scene)
@@ -114,7 +115,7 @@ export async function modelFromPrompt(prompt, studs, variant = 0, image = null, 
     name,
     prompt: text || name,
     summary,
-    stages: [{ name: 'Body', from: 0, to: 999, blurb: 'Plates fill the model from the ground up.' }],
+    stages: sectionStages(solid.cells),
     palette: {},
     main: 'wall',
   })
@@ -180,7 +181,7 @@ export function fillSource(source, studs, meta) {
     name,
     prompt: meta?.prompt || name,
     summary: meta?.summary || `Filled from ${name}. The narrow side is ${across} studs across.`,
-    stages: [{ name: 'Body', from: 0, to: 999, blurb: 'Plates fill the model from the ground up.' }],
+    stages: sectionStages(solid.cells),
     palette: {},
     main: 'wall',
   })

@@ -8,6 +8,7 @@ export const ANGLES = [
   { id: 'side', name: 'Side', yaw: Math.PI * 0.5 },
   { id: 'rear', name: 'Rear 3/4', yaw: Math.PI * 0.75 },
   { id: 'back', name: 'Back', yaw: Math.PI },
+  { id: 'under', name: 'Under', yaw: 0, pitch: -0.55 },
 ]
 
 const SIZE = 176
@@ -37,7 +38,7 @@ function ensure() {
   scene.add(keyLight)
 }
 
-export function frameObject(cameraObject, object, yaw, light) {
+export function frameObject(cameraObject, object, yaw, light, pitch = PITCH) {
   object.updateMatrixWorld(true)
   const box = new THREE.Box3().setFromObject(object)
   const center = box.getCenter(new THREE.Vector3())
@@ -45,9 +46,9 @@ export function frameObject(cameraObject, object, yaw, light) {
   const fov = (cameraObject.fov * Math.PI) / 180
   const dist = (radius / Math.sin(fov / 2)) * 1.18
   cameraObject.position.set(
-    center.x + Math.sin(yaw) * Math.cos(PITCH) * dist,
-    center.y + Math.sin(PITCH) * dist,
-    center.z + Math.cos(yaw) * Math.cos(PITCH) * dist,
+    center.x + Math.sin(yaw) * Math.cos(pitch) * dist,
+    center.y + Math.sin(pitch) * dist,
+    center.z + Math.cos(yaw) * Math.cos(pitch) * dist,
   )
   cameraObject.near = Math.max(0.01, dist / 100)
   cameraObject.far = dist * 16
@@ -65,6 +66,8 @@ export function legoObject(model) {
       const geo = round
         ? new THREE.CylinderGeometry(piece.w * 0.48, piece.w * 0.48, BODY_H, 12)
         : new THREE.BoxGeometry(piece.w * 0.96, BODY_H, piece.d * 0.96)
+      if (piece.mount === 'side' && piece.axis === 'z') geo.rotateX(Math.PI / 2)
+      else if (piece.mount === 'side') geo.rotateZ(Math.PI / 2)
       geo.translate(piece.wx, piece.wy, piece.wz)
       const list = byColor.get(piece.hex)
       if (list) list.push(geo)
@@ -127,10 +130,10 @@ function shot(pixels) {
   return canvas.toDataURL('image/jpeg', 0.72)
 }
 
-function capture(object, yaw) {
+function capture(object, yaw, pitch) {
   ensure()
   scene.add(object)
-  frameObject(camera, object, yaw, keyLight)
+  frameObject(camera, object, yaw, keyLight, pitch)
   renderer.render(scene, camera)
   const pixels = new Uint8Array(SIZE * SIZE * 4)
   renderer.getContext().readPixels(0, 0, SIZE, SIZE, renderer.getContext().RGBA, renderer.getContext().UNSIGNED_BYTE, pixels)
@@ -140,8 +143,8 @@ function capture(object, yaw) {
 
 export function scoreAngles(source, lego) {
   const angles = ANGLES.map((angle) => {
-    const sourceShot = capture(source, angle.yaw)
-    const legoShot = capture(lego, angle.yaw)
+    const sourceShot = capture(source, angle.yaw, angle.pitch)
+    const legoShot = capture(lego, angle.yaw, angle.pitch)
     const match = compare(sourceShot.pixels, legoShot.pixels)
     return {
       ...angle,
@@ -150,8 +153,9 @@ export function scoreAngles(source, lego) {
       legoUrl: legoShot.url,
     }
   })
-  const mean = angles.reduce((sum, angle) => sum + angle.score, 0) / angles.length
-  const worst = angles.reduce((low, angle) => (angle.score < low.score ? angle : low))
+  const graded = angles.filter((angle) => angle.id !== 'under')
+  const mean = graded.reduce((sum, angle) => sum + angle.score, 0) / graded.length
+  const worst = graded.reduce((low, angle) => (angle.score < low.score ? angle : low))
   return { angles, mean, worst }
 }
 

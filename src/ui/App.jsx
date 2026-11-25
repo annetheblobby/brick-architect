@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { blankModel } from '../lego/design.js'
-import { addCourse, insertCourse, placePiece, removePiece } from '../lego/edit.js'
+import { addCourse, clonePiece, hingePiece, insertCourse, movePiece, placePiece, removePiece } from '../lego/edit.js'
 import { download, slug } from '../lego/format.js'
 import { forgetSave, listSaves, modelFromCourse, openSave, rememberBuild } from '../lego/library.js'
-import { holdOutside } from '../lego/hold.js'
+import { holdOutside, localRevision } from '../lego/hold.js'
+import { diffBill } from '../lego/review.js'
 import { fillSource, modelFromFile, modelFromPrompt } from '../lego/promptmesh.js'
 import Composer from './Composer.jsx'
 import Studio from './Studio.jsx'
@@ -24,6 +25,7 @@ export default function App() {
   const [photo, setPhoto] = useState(null)
   const [modelFile, setModelFile] = useState(null)
   const [studs, setStuds] = useState(32)
+  const [style, setStyle] = useState('realistic')
   const [variant, setVariant] = useState(0)
   const [model, setModel] = useState(null)
   const [course, setCourse] = useState(0)
@@ -42,7 +44,12 @@ export default function App() {
   const [mesh, setMesh] = useState(null)
   const [busy, setBusy] = useState(false)
   const [tool, setTool] = useState('place')
-  const [brush, setBrush] = useState({ w: 2, d: 4, color: 'red' })
+  const [gridStep, setGridStep] = useState(1)
+  const [snap, setSnap] = useState(true)
+  const [selection, setSelection] = useState(null)
+  const history = useRef([])
+  const [canUndo, setCanUndo] = useState(false)
+  const [brush, setBrush] = useState({ w: 2, d: 4, color: 'red', kind: 'plate' })
   const [chat, setChat] = useState([])
   const [chatIndex, setChatIndex] = useState(0)
   const playingRef = useRef(false)
@@ -58,6 +65,7 @@ export default function App() {
   const chatRef = useRef([])
   const chatIndexRef = useRef(0)
   const chatSeq = useRef(0)
+  const tweakFails = useRef({ text: '', count: 0 })
   playingRef.current = playing
   courseRef.current = course
   modelRef.current = model
@@ -65,6 +73,11 @@ export default function App() {
   viewRef.current = view
   chatRef.current = chat
   chatIndexRef.current = chatIndex
+
+  useEffect(() => {
+    history.current = []
+    setCanUndo(false)
+  }, [model?.id])
 
   useEffect(() => {
     if (phase !== 'studio' || !playing || !model) return undefined
@@ -83,6 +96,16 @@ export default function App() {
   useEffect(() => {
     function onKey(event) {
       if (phase !== 'studio' || !modelRef.current) return
+      if (
+        viewRef.current === 'custom' &&
+        (event.metaKey || event.ctrlKey) &&
+        !event.shiftKey &&
+        !event.altKey &&
+        event.code === 'KeyZ'
+      ) {
+        if (undoEdit()) event.preventDefault()
+        return
+      }
       const tag = event.target.tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || event.target.isContentEditable) return
       const count = modelRef.current.courses.length
@@ -94,12 +117,30 @@ export default function App() {
         event.preventDefault()
         setPlaying(false)
         setCourse((current) => Math.max(0, current - 1))
-      } else if (viewRef.current === 'custom' && (event.key === 'r' || event.key === 'R') && !event.metaKey && !event.ctrlKey) {
-        event.preventDefault()
-        setBrush((current) => ({ ...current, w: current.d, d: current.w }))
-      } else if (viewRef.current === 'custom' && (event.key === 'e' || event.key === 'E') && !event.metaKey && !event.ctrlKey) {
-        event.preventDefault()
-        setTool((current) => (current === 'place' ? 'remove' : 'place'))
+      } else if (viewRef.current === 'custom' && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        const key = event.key.toLowerCase()
+        if (key === 'r') {
+          event.preventDefault()
+          setBrush((current) => ({ ...current, w: current.d, d: current.w }))
+        } else if (key === 'e') {
+          event.preventDefault()
+          setTool((current) => (current === 'place' ? 'remove' : 'place'))
+        } else if (key === 'v') {
+          event.preventDefault()
+          setTool('select')
+        } else if (key === 'm') {
+          event.preventDefault()
+          setTool('move')
+        } else if (key === 'c') {
+          event.preventDefault()
+          setTool('clone')
+        } else if (key === 'h') {
+          event.preventDefault()
+          setTool('hinge')
+        } else if (key === 's') {
+          event.preventDefault()
+          setSnap((current) => !current)
+        }
       } else if (event.key === ' ') {
         event.preventDefault()
         if (viewRef.current === 'custom') return
@@ -246,6 +287,8 @@ export default function App() {
         return
       }
       if (request?.chatId) {
+        if (modelRef.current?.bill) next.changes = diffBill(modelRef.current.bill, next.bill)
+        tweakFails.current = { text: '', count: 0 }
         const kept = commitRevision(next, source, request.chatId)
         if (!kept) {
           setBusy(false)
@@ -297,6 +340,7 @@ export default function App() {
           request.variant,
           request.photo?.dataUrl || null,
           request.revision || null,
+          request.style,
         )
         next = built.model
         source = built.source
@@ -311,7 +355,16 @@ export default function App() {
       finish(next, source, started, token, request)
     } catch (err) {
       if (tokenRef.current !== token) return
-      if (request.chatId) failChat(request.chatId, err.message || 'That change did not come together.')
+      if (request.chatId) {
+        const attempt = (request.revision?.tweak || '').trim()
+        const same = tweakFails.current.text === attempt
+        tweakFails.current = { text: attempt, count: same ? tweakFails.current.count + 1 : 1 }
+        const message =
+          tweakFails.current.count >= 2
+            ? 'Two tries at that change did not land. Ask for a different change.'
+            : err.message || 'That change did not come together.'
+        failChat(request.chatId, message)
+      }
       setBusy(false)
       setError(err.message || 'That build did not come together.')
       if (!fromStudio) setPhase('compose')
@@ -320,7 +373,7 @@ export default function App() {
 
   function buildCurrent() {
     if (!prompt.trim() && !photo && !modelFile) return
-    run({ prompt, photo: modelFile ? null : photo, modelFile, studs, variant })
+    run({ prompt, photo: modelFile ? null : photo, modelFile, studs, variant, style })
   }
 
   function applyTweak(text, boundary = '', mask = null) {
@@ -329,6 +382,100 @@ export default function App() {
     const limit = (boundary || '').trim()
     if (!current || (current.origin !== 'model' && current.origin !== 'scan') || !change || busy) return
     ensureChat()
+    let local = null
+    try {
+      local = localRevision(current, mask, change)
+    } catch (err) {
+      const kept = chatRef.current.slice(0, chatIndexRef.current + 1).filter((turn) => turn.status !== 'pending')
+      publishChat(
+        [
+          ...kept,
+          {
+            id: nextChatId(),
+            prompt: change,
+            boundary: (boundary || '').trim(),
+            reply: '',
+            status: 'error',
+            error: err.message || 'That drawn area could not be changed.',
+            model: null,
+            mesh: null,
+          },
+        ],
+        kept.length,
+      )
+      setPanel('ai')
+      return
+    }
+    if (local) {
+      const kept = chatRef.current.slice(0, chatIndexRef.current + 1).filter((turn) => turn.status !== 'pending')
+      const id = nextChatId()
+      if (!local.changed) {
+        publishChat(
+          [
+            ...kept,
+            {
+              id,
+              prompt: change,
+              boundary: (boundary || '').trim(),
+              reply: '',
+              status: 'error',
+              error: 'That drawn area did not change. Ask for a different change.',
+              model: null,
+              mesh: null,
+            },
+          ],
+          kept.length,
+        )
+        setPanel('ai')
+        return
+      }
+      const next = local.model
+      next.changes = diffBill(current.bill, next.bill)
+      next.summary = next.summary || 'Revised the drawn area on the current build.'
+      publishChat(
+        [
+          ...kept,
+          {
+            id,
+            prompt: change,
+            boundary: (boundary || '').trim(),
+            reply: next.summary,
+            status: 'done',
+            error: '',
+            model: copyModel(next),
+            mesh: meshRef.current,
+          },
+        ],
+        kept.length,
+      )
+      tweakFails.current = { text: '', count: 0 }
+      setModel(next)
+      setCourse(next.courses.length - 1)
+      setPanel('ai')
+      setError('')
+      return
+    }
+    if (tweakFails.current.text === change && tweakFails.current.count >= 2) {
+      const kept = chatRef.current.slice(0, chatIndexRef.current + 1).filter((turn) => turn.status !== 'pending')
+      publishChat(
+        [
+          ...kept,
+          {
+            id: nextChatId(),
+            prompt: change,
+            boundary: (boundary || '').trim(),
+            reply: '',
+            status: 'error',
+            error: 'Two tries at that change did not land. Ask for a different change.',
+            model: null,
+            mesh: null,
+          },
+        ],
+        kept.length,
+      )
+      setPanel('ai')
+      return
+    }
     const kept = chatRef.current.slice(0, chatIndexRef.current + 1).filter((turn) => turn.status !== 'pending')
     const sentence = (current.sentence || current.prompt || prompt || '').trim()
     const earlier = kept
@@ -363,6 +510,7 @@ export default function App() {
       photo: null,
       modelFile: null,
       studs,
+      style,
       variant: 0,
       revision: { tweak: fitTweak(earlier, change, limit), tweaks: [] },
       chatId: id,
@@ -374,7 +522,7 @@ export default function App() {
     if (!model || model.origin === 'file' || model.origin === 'scan' || model.origin === 'manual') return
     const next = variant + 1
     setVariant(next)
-    run({ prompt: model.prompt || prompt, photo, modelFile: null, studs, variant: next })
+    run({ prompt: model.prompt || prompt, photo, modelFile: null, studs, variant: next, style })
   }
 
   function refillMesh(value) {
@@ -402,6 +550,7 @@ export default function App() {
         const wait = Math.max(0, 480 - (performance.now() - started))
         window.setTimeout(() => {
           if (tokenRef.current !== token) return
+          if (current.bill) next.changes = diffBill(current.bill, next.bill)
           setModel(next)
           setCourse(next.courses.length - 1)
           setFocus(null)
@@ -514,7 +663,7 @@ export default function App() {
       }
       const text = (modelRef.current?.prompt || prompt).trim()
       if (!text && !photo) return
-      run({ prompt: text, photo, modelFile: null, studs: value, variant })
+      run({ prompt: text, photo, modelFile: null, studs: value, variant, style })
     }, 280)
   }
 
@@ -538,30 +687,86 @@ export default function App() {
     setPlaying(true)
   }
 
-  function handlePlace(cell) {
-    const next = placePiece(modelRef.current, courseRef.current, {
-      x: cell.x,
-      z: cell.z,
-      w: brush.w,
-      d: brush.d,
-      color: brush.color,
-    })
-    if (!next || next === modelRef.current) return
+  function rememberEdit() {
+    const current = modelRef.current
+    if (!current) return
+    history.current = [...history.current.slice(-49), { model: current, course: courseRef.current }]
+    setCanUndo(true)
+  }
+
+  function undoEdit() {
+    const previous = history.current.pop()
+    setCanUndo(history.current.length > 0)
+    if (!previous) return false
+    setModel(previous.model)
+    setCourse(Math.max(0, Math.min(previous.course, previous.model.courses.length - 1)))
+    setSelection(null)
+    setFocus(null)
+    setPlaying(false)
+    return true
+  }
+
+  function commitEdit(next) {
+    if (!next || next === modelRef.current) return false
+    rememberEdit()
     setModel(next)
     setFocus(null)
+    setPlaying(false)
+    return true
+  }
+
+  function handlePlace(cell) {
+    commitEdit(
+      placePiece(modelRef.current, courseRef.current, {
+        x: cell.x,
+        z: cell.z,
+        w: brush.w,
+        d: brush.d,
+        color: brush.color,
+        kind: brush.kind || 'plate',
+      }),
+    )
   }
 
   function handleRemove(pieceIndex) {
     const next = removePiece(modelRef.current, courseRef.current, pieceIndex)
     if (!next || next === modelRef.current) return
+    rememberEdit()
     setModel(next)
     setFocus(null)
+    setSelection((current) => {
+      if (!current || current.course !== courseRef.current) return current
+      if (current.index === pieceIndex) return null
+      if (current.index > pieceIndex) return { course: current.course, index: current.index - 1 }
+      return current
+    })
     setCourse((current) => Math.max(0, Math.min(current, next.courses.length - 1)))
+  }
+
+  function handleSelect(pieceIndex) {
+    if (pieceIndex == null || pieceIndex < 0) {
+      setSelection(null)
+      return
+    }
+    setSelection({ course: courseRef.current, index: pieceIndex })
+  }
+
+  function handleMove(pieceIndex, x, z) {
+    commitEdit(movePiece(modelRef.current, courseRef.current, pieceIndex, x, z))
+  }
+
+  function handleClone(pieceIndex, x, z) {
+    commitEdit(clonePiece(modelRef.current, courseRef.current, pieceIndex, x, z))
+  }
+
+  function handleHinge(pieceIndex) {
+    commitEdit(hingePiece(modelRef.current, courseRef.current, pieceIndex))
   }
 
   function handleAddLayer() {
     const next = addCourse(modelRef.current)
     if (!next || next === modelRef.current) return
+    rememberEdit()
     setPlaying(false)
     setModel(next)
     setCourse(next.courses.length - 1)
@@ -572,6 +777,7 @@ export default function App() {
     const index = courseRef.current
     const next = insertCourse(modelRef.current, index)
     if (!next || next === modelRef.current) return
+    rememberEdit()
     setPlaying(false)
     setModel(next)
     setCourse(Math.min(index + 1, next.courses.length - 1))
@@ -637,13 +843,24 @@ export default function App() {
             onParts={changeParts}
             tool={tool}
             brush={brush}
+            gridStep={gridStep}
+            snap={snap}
+            selection={selection}
             onTool={setTool}
+            onGrid={setGridStep}
+            onSnap={setSnap}
             onBrush={setBrush}
             onRotate={() => setBrush((current) => ({ ...current, w: current.d, d: current.w }))}
             onAddLayer={handleAddLayer}
             onInsertLayer={handleInsertLayer}
             onPlace={handlePlace}
             onRemove={handleRemove}
+            onSelect={handleSelect}
+            onMove={handleMove}
+            onClone={handleClone}
+            onHinge={handleHinge}
+            onUndo={undoEdit}
+            canUndo={canUndo}
             onSave={saveCurrent}
             saved={saved}
           />
@@ -653,12 +870,14 @@ export default function App() {
             photo={photo}
             modelFile={modelFile}
             studs={studs}
+            style={style}
             building={phase === 'building'}
             error={error}
             onPrompt={setPrompt}
             onPhoto={choosePhoto}
             onModel={chooseModel}
             onStuds={setStuds}
+            onStyle={setStyle}
             onBuild={buildCurrent}
             saves={saves}
             onOpenSave={openStored}

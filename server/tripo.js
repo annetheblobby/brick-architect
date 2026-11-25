@@ -39,12 +39,24 @@ function lengthOf(studs) {
   return cm >= 100 ? `${(cm / 100).toFixed(2)} m` : `${cm.toFixed(1)} cm`
 }
 
-function buildPrompt(prompt, tweak, studs) {
+const STYLE_GUIDE = {
+  realistic: 'Realistic: natural proportions, real materials, and continuous color.',
+  cartoon: 'Cartoon: flat block colors, hard edges between colors, and little or no gradient.',
+  relief: 'Relief: a shallow sculpture raised from a flat backing, like a bas-relief, with the subject facing forward.',
+  mosaic: 'Mosaic: the form made of flat color patches with crisp boundaries, like a tile mosaic, and no blended shading.',
+}
+
+export function styleOf(value) {
+  return STYLE_GUIDE[value] ? value : 'realistic'
+}
+
+export function buildPrompt(prompt, tweak, studs, style) {
   const sentence = (prompt || '').trim()
   const change = (tweak || '').trim()
   const text = change ? [sentence, change].filter(Boolean).join('. ') : sentence
-  if (!text) return ''
-  const guide = `The subject is about ${lengthOf(studs)} on its longest side. if there are appendages such as heads or limbs, have them facing striaght`
+  const chosen = styleOf(style)
+  const guide = `The subject is about ${lengthOf(studs)} on its longest side. if there are appendages such as heads or limbs, have them facing striaght. ${STYLE_GUIDE[chosen]}`
+  if (!text) return chosen === 'realistic' ? '' : guide.slice(0, 1024)
   const room = 1024 - guide.length - 2
   return `${text.slice(0, Math.max(0, room))}. ${guide}`
 }
@@ -78,9 +90,9 @@ async function uploadImage(key, dataUrl, hosted) {
 }
 
 /** Start a Tripo task and return its id. The caller polls until the file is ready. */
-export async function startGeneration(key, { prompt, image, tweak, variant, studs }, hosted = false) {
+export async function startGeneration(key, { prompt, image, tweak, variant, studs, style }, hosted = false) {
   const scale = studsOf(studs)
-  const sentence = buildPrompt(prompt, tweak, scale)
+  const sentence = buildPrompt(prompt, tweak, scale, style)
   const geometry = {
     model: MODEL,
     texture: true,
@@ -96,6 +108,7 @@ export async function startGeneration(key, { prompt, image, tweak, variant, stud
   if (image && !tweak) {
     route = '/generation/image-to-model'
     payload = { ...geometry, input: await uploadImage(key, image, hosted), texture_alignment: 'original_image' }
+    if (sentence) payload.prompt = sentence
   } else if (!sentence) {
     throw new Error('Type a sentence, add a picture, or use both.')
   }

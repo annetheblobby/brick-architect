@@ -38,7 +38,14 @@ export async function handler(event) {
     if (image && !tweak && !/^data:image\/(png|jpeg|jpg);base64,/.test(image)) {
       return json(400, { error: 'Use a PNG or JPEG picture.' })
     }
-    const taskId = await startGeneration(secret, { prompt, image, tweak, variant, studs: studsOf(payload.studs) }, true)
+    const taskId = await startGeneration(secret, {
+      prompt,
+      image,
+      tweak,
+      variant,
+      studs: studsOf(payload.studs),
+      style: payload.style,
+    }, true)
     return json(200, { taskId })
   } catch (err) {
     return json(502, { error: err.message || 'The model did not return a mesh.' })

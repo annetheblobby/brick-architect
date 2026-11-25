@@ -29,15 +29,23 @@ export function coverageOf(pieces) {
   return set
 }
 
+function mountFields(parts) {
+  const mount = parts[0].mount || ''
+  const axis = parts[0].axis || ''
+  if (!mount || !parts.every((part) => (part.mount || '') === mount && (part.axis || '') === axis)) return {}
+  return { mount, axis }
+}
+
 function cutSegment(seg, y) {
   const kind = seg[0].kind
   const color = seg[0].color
   const lengths = lengthsFor(kind)
+  const pose = mountFields(seg)
   const out = []
   let i = 0
   const offset = y % 2 === 1 && seg.length >= 6 && lengths.includes(2)
   if (offset) {
-    out.push({ x: seg[0].x, y, z: seg[0].z, w: 2, d: 1, color, kind })
+    out.push({ x: seg[0].x, y, z: seg[0].z, w: 2, d: 1, color, kind, ...pose })
     i = 2
   }
   while (i < seg.length) {
@@ -48,7 +56,7 @@ function cutSegment(seg, y) {
         break
       }
     }
-    out.push({ x: seg[i].x, y, z: seg[i].z, w: len, d: 1, color, kind })
+    out.push({ x: seg[i].x, y, z: seg[i].z, w: len, d: 1, color, kind, ...pose })
     i += len
   }
   return out
@@ -56,7 +64,9 @@ function cutSegment(seg, y) {
 
 function growDepth(strips) {
   const map = new Map()
-  for (const strip of strips) map.set(`${strip.x}|${strip.z}|${strip.w}|${strip.color}|${strip.kind}`, strip)
+  for (const strip of strips) {
+    map.set(`${strip.x}|${strip.z}|${strip.w}|${strip.color}|${strip.kind}|${strip.mount || ''}|${strip.axis || ''}`, strip)
+  }
   const used = new Set()
   const out = []
   const sorted = strips.slice().sort((a, b) => a.z - b.z || a.x - b.x || b.w - a.w)
@@ -69,7 +79,7 @@ function growDepth(strips) {
       const next = [strip]
       let ok = true
       for (let step = 1; step < depth; step++) {
-        const found = map.get(`${strip.x}|${strip.z + step}|${strip.w}|${strip.color}|${strip.kind}`)
+        const found = map.get(`${strip.x}|${strip.z + step}|${strip.w}|${strip.color}|${strip.kind}|${strip.mount || ''}|${strip.axis || ''}`)
         if (!found || used.has(found)) {
           ok = false
           break
@@ -90,6 +100,7 @@ function growDepth(strips) {
       d: group.length,
       color: strip.color,
       kind: strip.kind,
+      ...mountFields(group),
     })
   }
   return out
@@ -98,17 +109,19 @@ function growDepth(strips) {
 function tryMerge(a, b) {
   if (a.kind !== b.kind || a.color !== b.color || a.y !== b.y) return null
   if (a.kind === 'round1' || a.kind === 'round2') return null
+  if ((a.mount || '') !== (b.mount || '') || (a.axis || '') !== (b.axis || '')) return null
+  const pose = mountFields([a, b])
   if (a.z === b.z && a.d === b.d && a.x + a.w === b.x) {
-    return { x: a.x, y: a.y, z: a.z, w: a.w + b.w, d: a.d, color: a.color, kind: a.kind }
+    return { x: a.x, y: a.y, z: a.z, w: a.w + b.w, d: a.d, color: a.color, kind: a.kind, ...pose }
   }
   if (b.z === a.z && b.d === a.d && b.x + b.w === a.x) {
-    return { x: b.x, y: a.y, z: a.z, w: a.w + b.w, d: a.d, color: a.color, kind: a.kind }
+    return { x: b.x, y: a.y, z: a.z, w: a.w + b.w, d: a.d, color: a.color, kind: a.kind, ...pose }
   }
   if (a.x === b.x && a.w === b.w && a.z + a.d === b.z) {
-    return { x: a.x, y: a.y, z: a.z, w: a.w, d: a.d + b.d, color: a.color, kind: a.kind }
+    return { x: a.x, y: a.y, z: a.z, w: a.w, d: a.d + b.d, color: a.color, kind: a.kind, ...pose }
   }
   if (b.x === a.x && b.w === a.w && b.z + b.d === a.z) {
-    return { x: a.x, y: a.y, z: b.z, w: a.w, d: a.d + b.d, color: a.color, kind: a.kind }
+    return { x: a.x, y: a.y, z: b.z, w: a.w, d: a.d + b.d, color: a.color, kind: a.kind, ...pose }
   }
   return null
 }
@@ -174,7 +187,14 @@ function packCourse(cells, y) {
     }
     for (const cell of row) {
       const prev = seg[seg.length - 1]
-      if (prev && (cell.x !== prev.x + 1 || cell.color !== prev.color || cell.kind !== prev.kind)) flush()
+      if (
+        prev &&
+        (cell.x !== prev.x + 1 ||
+          cell.color !== prev.color ||
+          cell.kind !== prev.kind ||
+          (cell.mount || '') !== (prev.mount || '') ||
+          (cell.axis || '') !== (prev.axis || ''))
+      ) flush()
       seg.push(cell)
     }
     flush()

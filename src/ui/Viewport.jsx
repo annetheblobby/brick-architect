@@ -4,7 +4,7 @@ import { ContactShadows, Grid, OrbitControls } from '@react-three/drei'
 import * as THREE from 'three'
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js'
 import { colorByKey } from '../lego/palette.js'
-import { overlaps } from '../lego/edit.js'
+import { overlaps, snapOrigin } from '../lego/edit.js'
 import { BODY_H, PLATE } from '../lego/scale.js'
 import { isShown } from './draw.js'
 
@@ -50,7 +50,7 @@ function studGeometry(kind) {
 function groupPieces(pieces) {
   const map = new Map()
   for (const piece of pieces) {
-    const key = `${piece.kind}|${piece.w}|${piece.d}|${piece.hex}|${piece.alpha}`
+    const key = `${piece.kind}|${piece.w}|${piece.d}|${piece.hex}|${piece.alpha}|${piece.mount || ''}|${piece.axis || ''}`
     const list = map.get(key)
     if (list) list.push(piece)
     else map.set(key, [piece])
@@ -131,7 +131,9 @@ function Plates({ items, faded }) {
     const mesh = ref.current
     items.forEach((piece, index) => {
       dummy.position.set(piece.wx, piece.wy, piece.wz)
-      dummy.rotation.set(0, 0, 0)
+      if (piece.mount === 'side' && piece.axis === 'z') dummy.rotation.set(Math.PI / 2, 0, 0)
+      else if (piece.mount === 'side') dummy.rotation.set(0, 0, Math.PI / 2)
+      else dummy.rotation.set(0, 0, 0)
       dummy.scale.set(1, 1, 1)
       dummy.updateMatrix()
       mesh.setMatrixAt(index, dummy.matrix)
@@ -165,7 +167,9 @@ function Rims({ items, color = '#3ecf8e', grow = 1 }) {
     const mesh = ref.current
     items.forEach((piece, index) => {
       dummy.position.set(piece.wx, piece.wy, piece.wz)
-      dummy.rotation.set(0, 0, 0)
+      if (piece.mount === 'side' && piece.axis === 'z') dummy.rotation.set(Math.PI / 2, 0, 0)
+      else if (piece.mount === 'side') dummy.rotation.set(0, 0, Math.PI / 2)
+      else dummy.rotation.set(0, 0, 0)
       dummy.scale.set(grow, 1, grow)
       dummy.updateMatrix()
       mesh.setMatrixAt(index, dummy.matrix)
@@ -222,7 +226,7 @@ function Frame({ model, nonce }) {
     const height = model.heightUnits
     const radius = Math.max(width, depth, height * 1.4, 4)
     const distance = radius / Math.sin((30 * Math.PI) / 360)
-    camera.position.set(width * 0.42 + distance * 0.28, height * 0.55 + distance * 0.42, -depth * 0.2 - distance * 0.82)
+    camera.position.set(distance * 0.08, height * 0.5 + distance * 0.36, depth * 0.45 + distance * 0.72)
     const target = new THREE.Vector3(0, Math.max(height * 0.38, 0.4), 0)
     camera.near = 0.05
     camera.far = distance * 8
@@ -336,26 +340,56 @@ function pieceIndexAt(ray, pieces, target) {
   return best
 }
 
-function LayerEditor({ model, courseIndex, tool, brush, onPlace, onRemove }) {
+function LayerEditor({
+  model,
+  courseIndex,
+  tool,
+  brush,
+  gridStep,
+  snap,
+  selection,
+  onPlace,
+  onRemove,
+  onSelect,
+  onMove,
+  onClone,
+  onHinge,
+}) {
   const camera = useThree((state) => state.camera)
   const gl = useThree((state) => state.gl)
+  const controls = useThree((state) => state.controls)
   const [hover, setHover] = useState(null)
-  const toolRef = useRef(tool)
-  const brushRef = useRef(brush)
-  const onPlaceRef = useRef(onPlace)
-  const onRemoveRef = useRef(onRemove)
-  toolRef.current = tool
-  brushRef.current = brush
-  onPlaceRef.current = onPlace
-  onRemoveRef.current = onRemove
-  const ghostGeometry = useMemo(() => plateGeometry('plate', brush.w, brush.d).clone(), [brush.w, brush.d])
+  const live = useRef({})
+  live.current = {
+    model,
+    courseIndex,
+    tool,
+    brush,
+    gridStep,
+    snap,
+    selection,
+    onPlace,
+    onRemove,
+    onSelect,
+    onMove,
+    onClone,
+    onHinge,
+    controls,
+  }
+  const ghostKind = hover?.kind || brush.kind || 'plate'
+  const ghostW = hover?.w || brush.w
+  const ghostD = hover?.d || brush.d
+  const ghostGeometry = useMemo(
+    () => plateGeometry(ghostKind, ghostW, ghostD).clone(),
+    [ghostKind, ghostW, ghostD],
+  )
 
   useEffect(() => {
     const el = gl.domElement
     const raycaster = new THREE.Raycaster()
     const hit = new THREE.Vector3()
     const boxHit = new THREE.Vector3()
-    let down = null
+    let drag = null
 
     const inside = (event) => {
       const rect = el.getBoundingClientRect()
@@ -367,8 +401,10 @@ function LayerEditor({ model, courseIndex, tool, brush, onPlace, onRemove }) {
       )
     }
 
-    const sample = (event) => {
-      const course = model.courses[courseIndex]
+    const read = (event) => {
+      const props = live.current
+      const build = props.model
+      const course = build.courses[props.courseIndex]
       if (!course || !inside(event)) return null
       const rect = el.getBoundingClientRect()
       raycaster.setFromCamera(
@@ -379,84 +415,216 @@ function LayerEditor({ model, courseIndex, tool, brush, onPlace, onRemove }) {
         camera,
       )
       const pieceIndex = pieceIndexAt(raycaster.ray, course.pieces, boxHit)
-      if (toolRef.current === 'remove') return { pieceIndex }
       const planeY = (course.plateY + 1) * PLATE
       const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -planeY)
-      if (!raycaster.ray.intersectPlane(plane, hit)) return null
-      const x = Math.round(hit.x - model.shiftX)
-      const z = Math.round(hit.z - model.shiftZ)
-      const { w, d } = brushRef.current
-      return { x, z, blocked: overlaps(course.pieces, x, z, w, d), pieceIndex: -1 }
+      let rawX = null
+      let rawZ = null
+      if (raycaster.ray.intersectPlane(plane, hit)) {
+        rawX = hit.x - (build.shiftX || 0)
+        rawZ = hit.z - (build.shiftZ || 0)
+      }
+      return { course, pieceIndex, rawX, rawZ }
     }
 
+    const footprint = (sample, w, d, ignore) => {
+      if (!sample || sample.rawX == null) return null
+      const props = live.current
+      const snapped = snapOrigin(sample.rawX, sample.rawZ, w, d, sample.course.pieces, ignore, props.gridStep, props.snap)
+      return {
+        ...snapped,
+        blocked: overlaps(sample.course.pieces, snapped.x, snapped.z, w, d, ignore),
+      }
+    }
+
+    const sameHover = (prev, next) =>
+      prev &&
+      next &&
+      prev.x === next.x &&
+      prev.z === next.z &&
+      prev.blocked === next.blocked &&
+      prev.pieceIndex === next.pieceIndex &&
+      prev.dragging === next.dragging
+
     const publish = (event) => {
-      const next = sample(event)
-      setHover((prev) => {
-        if (!next) return prev ? null : prev
-        if (
-          prev &&
-          prev.x === next.x &&
-          prev.z === next.z &&
-          prev.blocked === next.blocked &&
-          prev.pieceIndex === next.pieceIndex
-        ) {
-          return prev
+      const props = live.current
+      const sample = read(event)
+      if (!sample) {
+        setHover((prev) => (prev ? null : prev))
+        return
+      }
+      const mode = props.tool
+      if (mode === 'place') {
+        const spot = footprint(sample, props.brush.w, props.brush.d, -1)
+        if (!spot) return
+        const next = {
+          ...spot,
+          pieceIndex: -1,
+          w: props.brush.w,
+          d: props.brush.d,
+          kind: props.brush.kind || 'plate',
+          color: props.brush.color,
         }
-        return next
-      })
+        setHover((prev) => (sameHover(prev, next) ? prev : next))
+        return
+      }
+      if (mode === 'clone') {
+        const picked = props.selection && props.selection.course === props.courseIndex ? props.selection.index : -1
+        const piece = picked >= 0 ? sample.course.pieces[picked] : null
+        if (!piece) {
+          setHover((prev) => (prev?.pieceIndex === sample.pieceIndex && prev.x == null ? prev : { pieceIndex: sample.pieceIndex }))
+          return
+        }
+        const spot = footprint(sample, piece.w, piece.d, -1)
+        if (!spot) return
+        const next = { ...spot, pieceIndex: picked, w: piece.w, d: piece.d, kind: piece.kind, color: piece.color, dragging: true }
+        setHover((prev) => (sameHover(prev, next) ? prev : next))
+        return
+      }
+      if (mode === 'move' && drag?.moved && drag.index >= 0) {
+        const piece = sample.course.pieces[drag.index]
+        if (!piece) return
+        const spot = footprint(sample, piece.w, piece.d, drag.index)
+        if (!spot) return
+        const next = { ...spot, pieceIndex: drag.index, w: piece.w, d: piece.d, kind: piece.kind, color: piece.color, dragging: true }
+        setHover((prev) => (sameHover(prev, next) ? prev : next))
+        return
+      }
+      setHover((prev) => (prev?.pieceIndex === sample.pieceIndex && prev.x == null ? prev : { pieceIndex: sample.pieceIndex }))
     }
 
     const onDown = (event) => {
       if (event.button !== 0) return
-      down = { x: event.clientX, y: event.clientY }
-    }
-    const onLeave = () => setHover(null)
-    const onUp = (event) => {
-      if (!down || event.button !== 0) return
-      const dx = event.clientX - down.x
-      const dy = event.clientY - down.y
-      down = null
-      if (dx * dx + dy * dy > 36) return
-      const next = sample(event)
-      if (!next) return
-      if (toolRef.current === 'remove') {
-        if (next.pieceIndex >= 0) onRemoveRef.current(next.pieceIndex)
-        return
+      const sample = read(event)
+      drag = {
+        x: event.clientX,
+        y: event.clientY,
+        moved: false,
+        index: sample?.pieceIndex ?? -1,
+        tool: live.current.tool,
+        angle: null,
       }
-      if (!next.blocked) onPlaceRef.current({ x: next.x, z: next.z })
+      if ((drag.tool === 'move' || drag.tool === 'hinge') && drag.index >= 0 && live.current.controls) {
+        live.current.controls.enabled = false
+      }
     }
 
-    el.style.cursor = tool === 'remove' ? 'pointer' : 'crosshair'
+    const onLeave = () => {
+      if (!drag?.moved) setHover(null)
+    }
+
+    const onSlide = (event) => {
+      if (drag) {
+        const dx = event.clientX - drag.x
+        const dy = event.clientY - drag.y
+        if (dx * dx + dy * dy > 16) drag.moved = true
+        if (drag.tool === 'hinge' && drag.moved && drag.index >= 0) {
+          const sample = read(event)
+          const piece = sample?.course.pieces[drag.index]
+          if (sample?.rawX != null && piece) {
+            const angle = Math.atan2(
+              sample.rawZ - (piece.z + (piece.d - 1) / 2),
+              sample.rawX - (piece.x + (piece.w - 1) / 2),
+            )
+            if (drag.angle == null) drag.angle = angle
+            let delta = angle - drag.angle
+            while (delta > Math.PI) delta -= Math.PI * 2
+            while (delta < -Math.PI) delta += Math.PI * 2
+            if (Math.abs(delta) > Math.PI / 2) {
+              live.current.onHinge(drag.index)
+              drag.angle = angle
+            }
+          }
+        }
+      }
+      publish(event)
+    }
+
+    const onUp = (event) => {
+      const gesture = drag
+      drag = null
+      if (live.current.controls) live.current.controls.enabled = true
+      if (!gesture || event.button !== 0) return
+      const sample = read(event)
+      const props = live.current
+      if (!sample) return
+      if (gesture.tool === 'place') {
+        if (gesture.moved) return
+        const spot = footprint(sample, props.brush.w, props.brush.d, -1)
+        if (spot && !spot.blocked) props.onPlace({ x: spot.x, z: spot.z })
+        return
+      }
+      if (gesture.tool === 'remove') {
+        if (!gesture.moved && sample.pieceIndex >= 0) props.onRemove(sample.pieceIndex)
+        return
+      }
+      if (gesture.tool === 'select') {
+        if (!gesture.moved) props.onSelect(sample.pieceIndex >= 0 ? sample.pieceIndex : null)
+        return
+      }
+      if (gesture.tool === 'move') {
+        if (gesture.moved && gesture.index >= 0) {
+          const piece = sample.course.pieces[gesture.index]
+          if (!piece) return
+          const spot = footprint(sample, piece.w, piece.d, gesture.index)
+          if (spot && !spot.blocked) props.onMove(gesture.index, spot.x, spot.z)
+          return
+        }
+        if (!gesture.moved && sample.pieceIndex >= 0) props.onSelect(sample.pieceIndex)
+        return
+      }
+      if (gesture.tool === 'clone') {
+        const selected = props.selection && props.selection.course === props.courseIndex ? props.selection.index : -1
+        if (!gesture.moved && sample.pieceIndex >= 0) {
+          props.onSelect(sample.pieceIndex)
+          return
+        }
+        const source = gesture.moved && gesture.index >= 0 ? gesture.index : selected
+        if (source < 0) return
+        const piece = sample.course.pieces[source]
+        if (!piece) return
+        const spot = footprint(sample, piece.w, piece.d, -1)
+        if (spot && !spot.blocked) props.onClone(source, spot.x, spot.z)
+        return
+      }
+      if (gesture.tool === 'hinge' && !gesture.moved && sample.pieceIndex >= 0) props.onHinge(sample.pieceIndex)
+    }
+
+    const cursor = tool === 'remove' ? 'pointer' : tool === 'move' ? 'grab' : 'crosshair'
+    el.style.cursor = cursor
     el.addEventListener('pointerdown', onDown)
-    el.addEventListener('pointermove', publish)
+    el.addEventListener('pointermove', onSlide)
     el.addEventListener('pointerleave', onLeave)
     window.addEventListener('pointerup', onUp)
     return () => {
       el.style.cursor = ''
+      if (live.current.controls) live.current.controls.enabled = true
       el.removeEventListener('pointerdown', onDown)
-      el.removeEventListener('pointermove', publish)
+      el.removeEventListener('pointermove', onSlide)
       el.removeEventListener('pointerleave', onLeave)
       window.removeEventListener('pointerup', onUp)
     }
-  }, [model, courseIndex, tool, brush.w, brush.d, camera, gl])
+  }, [camera, gl, tool])
 
   useEffect(() => {
     return () => ghostGeometry.dispose()
   }, [ghostGeometry])
 
   const course = model.courses[courseIndex]
-  const showGhost = tool === 'place' && hover && hover.x != null && course
-  const wx = showGhost ? hover.x + model.shiftX + (brush.w - 1) / 2 : 0
-  const wz = showGhost ? hover.z + model.shiftZ + (brush.d - 1) / 2 : 0
+  const showGhost = Boolean(course && hover && hover.x != null && (tool === 'place' || tool === 'clone' || hover.dragging))
+  const wx = showGhost ? hover.x + (model.shiftX || 0) + ((hover.w || brush.w) - 1) / 2 : 0
+  const wz = showGhost ? hover.z + (model.shiftZ || 0) + ((hover.d || brush.d) - 1) / 2 : 0
   const wy = showGhost ? course.plateY * PLATE + PLATE / 2 : 0
-  const piece = tool === 'remove' && hover?.pieceIndex >= 0 ? course?.pieces[hover.pieceIndex] : null
+  const hoverPiece = hover?.pieceIndex >= 0 && hover.x == null ? course?.pieces[hover.pieceIndex] : null
+  const selectedPiece = selection && selection.course === courseIndex ? course?.pieces[selection.index] : null
+  const ghostColor = hover?.color || brush.color
   return (
     <>
-      {piece ? <Rims items={[piece]} color="#e24b38" grow={1.08} /> : null}
-      {tool === 'place' ? (
-        <mesh visible={Boolean(showGhost)} position={[wx, wy, wz]} geometry={ghostGeometry} dispose={null} renderOrder={3}>
+      {selectedPiece ? <Rims items={[selectedPiece]} color="#3b6cf0" grow={1.08} /> : null}
+      {hoverPiece && hoverPiece !== selectedPiece ? <Rims items={[hoverPiece]} color={tool === 'remove' ? '#e24b38' : '#8eb0ff'} grow={1.08} /> : null}
+      {showGhost ? (
+        <mesh position={[wx, wy, wz]} geometry={ghostGeometry} dispose={null} renderOrder={3}>
           <meshStandardMaterial
-            color={hover?.blocked ? '#e24b38' : colorByKey(brush.color).hex}
+            color={hover?.blocked ? '#e24b38' : colorByKey(ghostColor).hex}
             transparent
             opacity={0.62}
             roughness={0.4}
@@ -548,8 +716,15 @@ function Scene({
   editing,
   tool,
   brush,
+  gridStep = 1,
+  snap = true,
+  selection = null,
   onPlace,
   onRemove,
+  onSelect,
+  onMove,
+  onClone,
+  onHinge,
   light,
   dim,
   viewRef,
@@ -578,10 +753,10 @@ function Scene({
       <directionalLight position={[-8, 7, -6]} intensity={tone.fill} />
       <Grid
         infiniteGrid
-        cellSize={1}
+        cellSize={editing ? gridStep : 1}
         cellThickness={0.55}
         cellColor={tone.grid}
-        sectionSize={8}
+        sectionSize={editing && gridStep < 1 ? 1 : 8}
         sectionThickness={1.05}
         sectionColor={tone.section}
         fadeDistance={Math.max(36, span * 3.2)}
@@ -635,8 +810,15 @@ function Scene({
           courseIndex={course}
           tool={tool}
           brush={brush}
+          gridStep={gridStep}
+          snap={snap}
+          selection={selection}
           onPlace={onPlace}
           onRemove={onRemove}
+          onSelect={onSelect}
+          onMove={onMove}
+          onClone={onClone}
+          onHinge={onHinge}
         />
       ) : null}
     </>
@@ -681,8 +863,15 @@ export default function Viewport({
   editing,
   tool,
   brush,
+  gridStep = 1,
+  snap = true,
+  selection = null,
   onPlace,
   onRemove,
+  onSelect,
+  onMove,
+  onClone,
+  onHinge,
   light,
   dim,
   viewRef,
@@ -707,8 +896,15 @@ export default function Viewport({
         editing={editing}
         tool={tool}
         brush={brush}
+        gridStep={gridStep}
+        snap={snap}
+        selection={selection}
         onPlace={onPlace}
         onRemove={onRemove}
+        onSelect={onSelect}
+        onMove={onMove}
+        onClone={onClone}
+        onHinge={onHinge}
         light={light}
         dim={dim}
         viewRef={viewRef}

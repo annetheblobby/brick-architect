@@ -81,7 +81,14 @@ function attach(server, root) {
         send(res, 400, { error: 'Use a PNG or JPEG picture.' })
         return
       }
-      const taskId = await startGeneration(key, { prompt, image, tweak, variant, studs: studsOf(payload.studs) }, false)
+      const taskId = await startGeneration(key, {
+        prompt,
+        image,
+        tweak,
+        variant,
+        studs: studsOf(payload.studs),
+        style: payload.style,
+      }, false)
       send(res, 200, { taskId })
     } catch (err) {
       send(res, 502, { error: err.message || 'The model did not return a mesh.' })

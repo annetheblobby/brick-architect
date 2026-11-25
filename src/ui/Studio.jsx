@@ -7,7 +7,7 @@ import DrawMask from './DrawMask.jsx'
 import Order from './Order.jsx'
 import Rail from './Rail.jsx'
 import Viewport from './Viewport.jsx'
-import { boundaryText, emptyMask, mergeMask } from './draw.js'
+import { boundaryText, emptyMask, maskFromStrokes } from './draw.js'
 
 const idleMask = emptyMask()
 
@@ -70,18 +70,30 @@ export default function Studio({
   onParts,
   tool,
   brush,
+  gridStep,
+  snap,
+  selection,
   onTool,
+  onGrid,
+  onSnap,
   onBrush,
   onRotate,
   onAddLayer,
   onInsertLayer,
   onPlace,
   onRemove,
+  onSelect,
+  onMove,
+  onClone,
+  onHinge,
+  onUndo,
+  canUndo,
   onSave,
   saved,
 }) {
   const [draft, setDraft] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [editOpen, setEditOpen] = useState(false)
   const [orderOpen, setOrderOpen] = useState(false)
   const [light, setLight] = useState(70)
   const [dim, setDim] = useState(0)
@@ -89,7 +101,10 @@ export default function Studio({
   const [mask, setMask] = useState(emptyMask)
   const [maskNonce, setMaskNonce] = useState(0)
   const settingsRef = useRef(null)
+  const editRef = useRef(null)
   const viewRef = useRef(null)
+  const drawRef = useRef(null)
+  const drawStack = useRef([])
   const boundary = useMemo(() => boundaryText(mask), [mask])
   const buildKey = `${model.id}:${model.stats.parts}:${model.courses.length}`
   const step = model.courses[course]
@@ -114,6 +129,26 @@ export default function Studio({
   }, [settingsOpen])
 
   useEffect(() => {
+    if (view !== 'custom') setEditOpen(false)
+  }, [view])
+
+  useEffect(() => {
+    if (!editOpen) return undefined
+    function onPointer(event) {
+      if (!editRef.current?.contains(event.target)) setEditOpen(false)
+    }
+    function onKey(event) {
+      if (event.key === 'Escape') setEditOpen(false)
+    }
+    document.addEventListener('pointerdown', onPointer)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('pointerdown', onPointer)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [editOpen])
+
+  useEffect(() => {
     if (!orderOpen) return undefined
     function onKey(event) {
       if (event.key === 'Escape') setOrderOpen(false)
@@ -123,6 +158,7 @@ export default function Studio({
   }, [orderOpen])
 
   useEffect(() => {
+    drawStack.current = []
     setMask(emptyMask())
     setMaskNonce((value) => value + 1)
     setDrawing(false)
@@ -132,19 +168,52 @@ export default function Studio({
     if (panel !== 'ai') setDrawing(false)
   }, [panel])
 
-  useEffect(() => {
-    if (!drawing) return undefined
-    function onKey(event) {
-      if (event.key === 'Escape' && !orderOpen) setDrawing(false)
-    }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [drawing, orderOpen])
-
   function clearMask() {
+    drawStack.current = []
     setMask(emptyMask())
     setMaskNonce((value) => value + 1)
   }
+
+  function previewStroke(found) {
+    const base = maskFromStrokes(drawStack.current)
+    setMask(found ? maskFromStrokes([...drawStack.current, found]) : base)
+  }
+
+  function commitStroke(found) {
+    if (!found || (!found.pieces.length && !found.cells.length)) {
+      previewStroke(null)
+      return
+    }
+    drawStack.current = [...drawStack.current, found]
+    setMask(maskFromStrokes(drawStack.current))
+  }
+
+  function undoStroke() {
+    if (drawRef.current?.cancelLive()) {
+      setMask(maskFromStrokes(drawStack.current))
+      return true
+    }
+    if (!drawStack.current.length) return false
+    drawStack.current = drawStack.current.slice(0, -1)
+    setMask(maskFromStrokes(drawStack.current))
+    drawRef.current?.dropLast()
+    return true
+  }
+
+  useEffect(() => {
+    if (panel !== 'ai') return undefined
+    function onKey(event) {
+      if (event.key === 'Escape' && drawing && !orderOpen) {
+        setDrawing(false)
+        return
+      }
+      if (orderOpen || view === 'custom') return
+      if (busy || !(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey || event.code !== 'KeyZ') return
+      if (undoStroke()) event.preventDefault()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [panel, drawing, orderOpen, busy, view])
 
   function toggleDraw() {
     if (!drawing && playing) onPlay()
@@ -179,7 +248,7 @@ export default function Studio({
               All
             </button>
             <button type="button" className={view === 'custom' ? 'on' : ''} onClick={() => onView('custom')}>
-              Custom
+              Build
             </button>
             {mesh ? (
               <button type="button" className={view === 'model' ? 'on' : ''} onClick={() => onView('model')}>
@@ -285,11 +354,16 @@ export default function Studio({
           <span className="quiet hide-sm">
             {model.stats.parts} parts · {money(model.stats.dollars)}
           </span>
-          <button type="button" className="texty" onClick={onSave} disabled={busy}>
-            {saved ? 'Saved' : 'Save'}
-          </button>
-          <button type="button" className="primary" onClick={() => setOrderOpen(true)}>
+          {view === 'custom' ? (
+            <button type="button" className="texty" onClick={onUndo} disabled={!canUndo}>
+              Undo
+            </button>
+          ) : null}
+          <button type="button" className="texty" onClick={() => setOrderOpen(true)}>
             Order
+          </button>
+          <button type="button" className="solid" onClick={onSave} disabled={busy}>
+            {saved ? 'Saved' : 'Save'}
           </button>
         </div>
       </header>
@@ -306,8 +380,15 @@ export default function Studio({
             editing={view === 'custom' && !(panel === 'ai' && drawing)}
             tool={tool}
             brush={brush}
+            gridStep={gridStep}
+            snap={snap}
+            selection={selection}
             onPlace={onPlace}
             onRemove={onRemove}
+            onSelect={onSelect}
+            onMove={onMove}
+            onClone={onClone}
+            onHinge={onHinge}
             light={light}
             dim={dim}
             viewRef={viewRef}
@@ -316,6 +397,7 @@ export default function Studio({
           />
           {panel === 'ai' && drawing ? (
             <DrawMask
+              ref={drawRef}
               active
               viewRef={viewRef}
               model={model}
@@ -324,58 +406,27 @@ export default function Studio({
               ghost={ghost}
               nonce={maskNonce}
               frame={nonce}
-              onMark={(found) => setMask((current) => mergeMask(current, found))}
+              onPreview={previewStroke}
+              onCommit={commitStroke}
             />
           ) : null}
           {panel === 'ai' && drawing ? (
             <p className="draw-hint">
-              {view === 'model' ? 'Switch to Built to mark the space' : 'Drag to mark the space to change'}
+              {view === 'model' ? 'Switch to Built to mark the space' : 'Drag to mark the space. Ctrl+Z removes the last stroke'}
             </p>
           ) : null}
-          {view === 'custom' ? (
-            <div className="edit-bar">
-              <div className="segment" role="group" aria-label="Edit tool">
-                <button type="button" className={tool === 'place' ? 'on' : ''} onClick={() => onTool('place')}>
-                  Place
-                </button>
-                <button type="button" className={tool === 'remove' ? 'on' : ''} onClick={() => onTool('remove')}>
-                  Remove
-                </button>
-              </div>
-              <div className="segment" role="group" aria-label="New layer">
-                <button
-                  type="button"
-                  onClick={onInsertLayer}
-                  disabled={!step.pieces.length}
-                  title={step.pieces.length ? 'Add an empty layer above this one' : 'Place a plate on this layer first'}
-                >
-                  Layer above
-                </button>
-                <button
-                  type="button"
-                  onClick={onAddLayer}
-                  disabled={!model.courses[model.courses.length - 1].pieces.length}
-                  title={
-                    model.courses[model.courses.length - 1].pieces.length
-                      ? 'Add an empty layer on top of the build'
-                      : 'Place a plate on the top layer first'
-                  }
-                >
-                  Layer on top
-                </button>
-              </div>
+          {view === 'custom' ? null : (
+            <div className="plaque">
+              <strong>
+                {model.stats.width} × {model.stats.depth} studs
+              </strong>
+              <span>
+                {(model.stats.mm.w / 10).toFixed(1)} × {(model.stats.mm.d / 10).toFixed(1)} ×{' '}
+                {(model.stats.mm.h / 10).toFixed(1)} cm
+              </span>
+              <span>Bond {Math.round(model.stats.bond * 100)}%</span>
             </div>
-          ) : null}
-          <div className="plaque">
-            <strong>
-              {model.stats.width} × {model.stats.depth} studs
-            </strong>
-            <span>
-              {(model.stats.mm.w / 10).toFixed(1)} × {(model.stats.mm.d / 10).toFixed(1)} ×{' '}
-              {(model.stats.mm.h / 10).toFixed(1)} cm
-            </span>
-            <span>Bond {Math.round(model.stats.bond * 100)}%</span>
-          </div>
+          )}
           <div className="scrub">
             <button
               type="button"
@@ -399,16 +450,96 @@ export default function Studio({
             </span>
           </div>
           <div className="view-actions">
-            {model.origin === 'model' || model.origin === 'scan' ? (
-              <button
-                type="button"
-                className={panel === 'ai' ? 'on' : ''}
-                aria-pressed={panel === 'ai'}
-                aria-label="Chat"
-                onClick={() => onPanel(panel === 'ai' ? 'step' : 'ai')}
-              >
-                Chat
-              </button>
+            {view === 'custom' ? (
+              <div className="edit-menu" ref={editRef}>
+                <button
+                  type="button"
+                  className={editOpen ? 'on' : ''}
+                  aria-haspopup="menu"
+                  aria-expanded={editOpen}
+                  aria-controls="edit-tools"
+                  onClick={() => setEditOpen((open) => !open)}
+                >
+                  Tools
+                </button>
+                {editOpen ? (
+                  <div className="edit-panel" id="edit-tools" role="menu">
+                    <div className="edit-group">
+                      <span>Tool</span>
+                      <div className="segment" role="group" aria-label="Tool">
+                        <button type="button" className={tool === 'place' ? 'on' : ''} onClick={() => onTool('place')}>
+                          Place
+                        </button>
+                        <button type="button" className={tool === 'select' ? 'on' : ''} onClick={() => onTool('select')}>
+                          Select
+                        </button>
+                        <button type="button" className={tool === 'move' ? 'on' : ''} onClick={() => onTool('move')}>
+                          Move
+                        </button>
+                        <button type="button" className={tool === 'clone' ? 'on' : ''} onClick={() => onTool('clone')}>
+                          Clone
+                        </button>
+                        <button type="button" className={tool === 'hinge' ? 'on' : ''} onClick={() => onTool('hinge')}>
+                          Hinge
+                        </button>
+                        <button type="button" className={tool === 'remove' ? 'on' : ''} onClick={() => onTool('remove')}>
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                    <div className="edit-group">
+                      <span>Grid</span>
+                      <div className="segment" role="group" aria-label="Grid">
+                        <button type="button" className={gridStep === 1 ? 'on' : ''} onClick={() => onGrid(1)}>
+                          1 stud
+                        </button>
+                        <button type="button" className={gridStep === 0.5 ? 'on' : ''} onClick={() => onGrid(0.5)}>
+                          1/2
+                        </button>
+                        <button type="button" className={gridStep === 0.25 ? 'on' : ''} onClick={() => onGrid(0.25)}>
+                          Fine
+                        </button>
+                        <button type="button" className={snap ? 'on' : ''} aria-pressed={snap} onClick={() => onSnap((value) => !value)}>
+                          Snap
+                        </button>
+                      </div>
+                    </div>
+                    <div className="edit-group">
+                      <span>History</span>
+                      <div className="segment" role="group" aria-label="History">
+                        <button type="button" onClick={onUndo} disabled={!canUndo}>
+                          Undo
+                        </button>
+                      </div>
+                    </div>
+                    <div className="edit-group">
+                      <span>Layers</span>
+                      <div className="segment" role="group" aria-label="New layer">
+                        <button
+                          type="button"
+                          onClick={onInsertLayer}
+                          disabled={!step.pieces.length}
+                          title={step.pieces.length ? 'Add an empty layer above this one' : 'Place a plate on this layer first'}
+                        >
+                          Layer above
+                        </button>
+                        <button
+                          type="button"
+                          onClick={onAddLayer}
+                          disabled={!model.courses[model.courses.length - 1].pieces.length}
+                          title={
+                            model.courses[model.courses.length - 1].pieces.length
+                              ? 'Add an empty layer on top of the build'
+                              : 'Place a plate on the top layer first'
+                          }
+                        >
+                          Layer on top
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
             ) : null}
             <button type="button" className="reset-view" onClick={onReset}>
               Reset view
@@ -458,9 +589,10 @@ export default function Studio({
               drawHint={
                 view === 'model'
                   ? 'Switch to Built to mark the space to change.'
-                  : 'Drag to mark the space to change — bricks and open baseplate in that area.'
+                  : 'Drag to mark the space to change. Ctrl+Z removes the last stroke.'
               }
               onToggleDraw={toggleDraw}
+              onUndoDraw={undoStroke}
               onClearDraw={clearMask}
               onSend={sendTweak}
               onRestore={onRestore}
@@ -472,9 +604,9 @@ export default function Studio({
                 <strong>{pad(course + 1)}</strong>
               </div>
               <Custom
+                model={model}
                 tool={tool}
                 brush={brush}
-                onTool={onTool}
                 onBrush={onBrush}
                 onRotate={onRotate}
                 onAddLayer={onAddLayer}
